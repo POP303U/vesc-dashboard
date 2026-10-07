@@ -45,6 +45,20 @@ Item {
     property real fs: portrait ? 0.6 : 1.0
     property real sfont: Math.max(16, ui * 0.035)
     property real statusH: width * 0.28   // portrait: battery bar and status row
+    property int gaugeCount: 7
+
+    // really a fix for a unreproducible bug, wrong gauge colors after orientation rotation 
+    onPortraitChanged: {
+        gaugeCount = 0
+        rebuildTimer.restart()
+    }
+    
+    // rebuilding guages on an interval to fix misdraws
+    Timer {
+        id: rebuildTimer
+        interval: 60
+        onTriggered: gaugeCount = 7
+    }
 
     // units, changed on the settings page
     property bool imperial: false
@@ -68,10 +82,15 @@ Item {
 
     // predefined layouts: edit or add your own, the first one is used at startup
     property var presets: [
-        { name: "Full",       main: "speed",   slots: ["phase", "line", "weak", "duty", "tempEsc", "tempMotor"] },
-        { name: "Ride",       main: "speed",   slots: ["power", "range", "battery", "line", "tempEsc", "tempMotor"] },
-        { name: "Tuning",     main: "speed",   slots: ["phase", "line", "weak", "duty", "power", "tempEsc"] },
-        { name: "Efficiency", main: "consump", slots: ["speed", "power", "range", "battery", "line", "voltage"] },
+        // Default
+        { name: "Default",    main: "speed",   slots: ["power", "range", "battery", "line", "tempEsc", "tempMotor"] },
+
+        // Volts and Amps displayed nicely
+        { name: "Amperage",   main: "speed",   slots: ["phase", "line", "weak", "duty", "tempEsc", "tempMotor"] },
+        { name: "Voltage",    main: "speed",   slots: ["vq", "power", "mod", "battery", "line", "voltage"] },
+
+        // Still dont know about this
+        { name: "Tuning",     main: "speed",   slots: ["phase", "line", "weak", "duty", "power", "mod"] },
 
         // FOC / field weakening / overmodulation diagnostics
         { name: "FOC",        main: "mod",     slots: ["id", "iq", "vd", "vq", "phase", "line"] }
@@ -121,10 +140,10 @@ Item {
     property real cellMax: 4.2
     property real speedMaxKm: 60
     property real rangeMaxKm: 100
-    property real minPhase: -100
-    property real maxPhase: 100
-    property real maxBattIn: 60
-    property real maxBattRegen: -30
+    property real minPhase: -150
+    property real maxPhase: 150
+    property real maxBattIn: 100
+    property real maxBattRegen: -100
     property real maxFw: 60
     property real tempMosStart: 85
     property real tempMosEnd: 100
@@ -141,21 +160,18 @@ Item {
 
     // Voltage gauge scale: linear limit (Vdc / sqrt(3)) with room for the ~1.10 six-step limit
     // plus a little headroom. Rounded to 5 V for cleaner gauge labels.
-    property real dqVoltageLim: Math.max(
-        10,
-        Math.ceil((cells * cellMax / Math.sqrt(3.0) * 1.15) / 5.0) * 5.0
-    )
+    property real dqVoltageLim: Math.max(10, niceLim(cells * cellMax / Math.sqrt(3.0) * 1.15, 8))
     property real speedMaxDisp: Math.ceil(speedMaxKm * distK / 10) * 10
     property real rangeMaxDisp: Math.ceil(rangeMaxKm * distK / 50) * 50
 
     // range estimate
     property real packAh: 10
-    property real packWh: packAh * cells * 3.6   // 3.6 V nominal per cell
+    property real packWh: packAh * cells * 3.6    // 3.6 V nominal per cell
     property real whAvg: 0                        // slow average of Wh/km, used only for range
     property bool whAvgValid: false
 
-    // set true to use the firmware's own battery level instead of the voltage estimate
-    property bool useFwLevel: false
+    // set true to use the firmware's own battery level instead of the voltage estimate (good)
+    property bool useFwLevel: true
     property real fwLevel: -1
     property bool configRead: false
 
@@ -163,14 +179,26 @@ Item {
     function stepFor(lo, hi, n) {
         var cand = [2, 5, 10, 15, 20, 25, 30, 50, 100, 200, 250, 500, 1000, 2000]
         var r = hi - lo
-        var best = 10
+        var best = -1
+        var fit = 0
         for (var i = 0; i < cand.length; i++) {
             var s = cand[i]
+            if (fit === 0 && r / s <= n) fit = s
             if (lo % s !== 0 || hi % s !== 0) continue
             best = s
             if (r / s <= n) return s
         }
-        return best
+        // nothing divides cleanly: take the closest step that gives a readable number of labels
+        return (best > 0 && r / best <= n * 1.5) ? best : (fit > 0 ? fit : 10)
+    }
+
+    // smallest symmetric limit above raw that lands on a clean step with at most n intervals across -lim..lim
+    function niceLim(raw, n) {
+        var cand = [2, 5, 10, 15, 20, 25, 30, 50, 100, 200, 250, 500, 1000, 2000]
+        for (var i = 0; i < cand.length; i++) {
+            if (2 * raw / cand[i] <= n) return Math.ceil(raw / cand[i]) * cand[i]
+        }
+        return Math.ceil(raw / 2000) * 2000
     }
 
     function roundUp10(x) { return Math.ceil(x / 10) * 10 }
@@ -188,7 +216,7 @@ Item {
         return tempHotColor
     }
 
-    // everything a gauge needs, by catalog id
+    // everything a gauge needs, by catalog id, recycling colors is eco
     function gDef(g) {
         switch (g) {
         case "speed":
@@ -447,7 +475,7 @@ Item {
             height: portrait ? mainItem.height - statusH - 2 * portraitMargin
                              : mainItem.height - 2 * areaMargin
             Repeater {
-                model: 7
+                model: gaugeCount
                     CustomGauge {
                     property string gid: gaugeAt(index)
                     property var d: gDef(gid)
