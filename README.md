@@ -1,3 +1,5 @@
+# Custom RT-Data Dashboard
+
 Implements a much better dashboard than the stock RT Data for widescreen mobile users.
 
 ## Features
