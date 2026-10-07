@@ -1,5 +1,5 @@
 import QtQuick 2.7
-import QtQuick.Controls 2.0
+import QtQuick.Controls 2.10
 import QtQuick.Layouts 1.3
 import QtQuick.Controls.Material 2.2
 import Vedder.vesc.utility 1.0
@@ -37,7 +37,8 @@ Item {
     property bool mirrorRight: true        // right gauges count the other way, like the stock duty gauge
 
     // page and orientation
-    property int page: 0                  // 0 = dashboard, 1 = settings
+    property var dialogParent: ApplicationWindow.overlay
+    property var settingsSnap: null
     property int orient: 0                // 0 = auto, 1 = landscape, 2 = portrait
     property bool portrait: orient === 0 ? width < height : orient === 2
     property real ui: Math.min(width, height)
@@ -358,7 +359,6 @@ Item {
     Item {
         id: dashPage
         anchors.fill: parent
-        visible: page === 0
 
         Item {
             id: gaugeArea
@@ -429,7 +429,7 @@ Item {
                 MouseArea {
                     id: gearMouse
                     anchors.fill: parent
-                    onClicked: page = 1
+                    onClicked: settingsDialog.open()
                 }
             }
         }
@@ -524,149 +524,173 @@ Item {
         }
     }
 
-    // settings page
-    Rectangle {
-        id: settingsPage
-        anchors.fill: parent
-        visible: page === 1
-        color: "#262626"
+    // settings dialog, same style as the stock dashboard's
+    Dialog {
+        id: settingsDialog
+        modal: true
+        focus: true
+        width: parent.width - 20
+        height: Math.min(implicitHeight, parent.height - 40)
+        closePolicy: Popup.CloseOnEscape
+        x: 10
+        y: Math.max((parent.height - height) / 2, 10)
+        parent: dialogParent
+        standardButtons: Dialog.Ok | Dialog.Cancel
 
-        Flickable {
+        Overlay.modal: Rectangle {
+            color: "#AA000000"
+        }
+
+        // remember everything on open so Cancel can put it back
+        onOpened: {
+            mainItem.settingsSnap = {
+                layoutIndex: mainItem.layoutIndex,
+                mainGauge: mainItem.mainGauge,
+                slotGauges: mainItem.slotGauges.slice(),
+                orient: mainItem.orient,
+                imperial: mainItem.imperial,
+                useFwLevel: mainItem.useFwLevel,
+                cells: mainItem.cells,
+                packAh: mainItem.packAh
+            }
+        }
+
+        onRejected: {
+            var s = mainItem.settingsSnap
+            if (!s) return
+            mainItem.layoutIndex = s.layoutIndex
+            mainItem.mainGauge = s.mainGauge
+            mainItem.slotGauges = s.slotGauges
+            mainItem.orient = s.orient
+            mainItem.imperial = s.imperial
+            mainItem.useFwLevel = s.useFwLevel
+            mainItem.cells = s.cells
+            mainItem.packAh = s.packAh
+        }
+
+        ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 16
-            contentWidth: width
-            contentHeight: setCol.height + 30
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
 
-            Column {
-                id: setCol
-                width: parent.width
-                spacing: 18
+            ScrollView {
+                id: setScroll
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                contentWidth: availableWidth
 
-                Row {
-                    spacing: 20
-                    Button {
-                        text: "Back"
-                        font.pixelSize: sfont
-                        onClicked: page = 0
-                    }
-                    Text {
-                        text: "Layout: " + (layoutIndex >= 0 ? presets[layoutIndex].name : "Custom")
-                        color: "#ddd"
-                        font.pixelSize: sfont * 1.2
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-                }
-
-                Text { text: "Predefined layouts"; color: "#aaa"; font.pixelSize: sfont }
-                Flow {
-                    width: setCol.width
+                ColumnLayout {
+                    width: setScroll.availableWidth
                     spacing: 10
-                    Repeater {
-                        model: presets.length
-                        Button {
-                            text: presets[index].name
-                            font.pixelSize: sfont
-                            highlighted: layoutIndex === index
-                            onClicked: applyPreset(index)
+
+                    GroupBox {
+                        title: qsTr("Layout: ") + (layoutIndex >= 0 ? presets[layoutIndex].name : "Custom")
+                        Layout.fillWidth: true
+
+                        ColumnLayout {
+                            anchors.fill: parent
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Repeater {
+                                    model: presets.length
+                                    Button {
+                                        Layout.fillWidth: true
+                                        text: presets[index].name
+                                        highlighted: layoutIndex === index
+                                        onClicked: applyPreset(index)
+                                    }
+                                }
+                            }
+
+                            Repeater {
+                                model: 7
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label {
+                                        Layout.preferredWidth: 90
+                                        text: index === 0 ? "Main gauge" : "Gauge " + index
+                                    }
+                                    Button { text: "<"; onClicked: cycleGauge(index, -1) }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        horizontalAlignment: Text.AlignHCenter
+                                        text: nameOf(gaugeAt(index))
+                                    }
+                                    Button { text: ">"; onClicked: cycleGauge(index, 1) }
+                                }
+                            }
+
+                            Label {
+                                text: "Gauges 1 to 3 are the top row, 4 to 6 the bottom row"
+                                opacity: 0.6
+                            }
                         }
                     }
-                }
 
-                Text {
-                    text: "Gauges (1 to 3 top row, 4 to 6 bottom row)"
-                    color: "#aaa"
-                    font.pixelSize: sfont
-                }
-                Repeater {
-                    model: 7
-                    Row {
-                        spacing: 12
-                        Text {
-                            width: sfont * 8
-                            text: index === 0 ? "Main gauge" : "Gauge " + index
-                            color: "#ddd"
-                            font.pixelSize: sfont
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Button {
-                            text: "<"
-                            font.pixelSize: sfont
-                            onClicked: cycleGauge(index, -1)
-                        }
-                        Text {
-                            width: sfont * 10
-                            horizontalAlignment: Text.AlignHCenter
-                            text: nameOf(gaugeAt(index))
-                            color: "#ddd"
-                            font.pixelSize: sfont
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Button {
-                            text: ">"
-                            font.pixelSize: sfont
-                            onClicked: cycleGauge(index, 1)
+                    GroupBox {
+                        title: qsTr("Display")
+                        Layout.fillWidth: true
+
+                        ColumnLayout {
+                            anchors.fill: parent
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Button { Layout.fillWidth: true; text: "Auto"; highlighted: orient === 0; onClicked: orient = 0 }
+                                Button { Layout.fillWidth: true; text: "Landscape"; highlighted: orient === 1; onClicked: orient = 1 }
+                                Button { Layout.fillWidth: true; text: "Portrait"; highlighted: orient === 2; onClicked: orient = 2 }
+                            }
+
+                            Switch {
+                                text: "Imperial units (mph, mi)"
+                                checked: imperial
+                                onClicked: imperial = checked
+                            }
                         }
                     }
-                }
 
-                Text { text: "Orientation"; color: "#aaa"; font.pixelSize: sfont }
-                Flow {
-                    width: setCol.width
-                    spacing: 10
-                    Button { text: "Auto"; font.pixelSize: sfont; highlighted: orient === 0; onClicked: orient = 0 }
-                    Button { text: "Landscape"; font.pixelSize: sfont; highlighted: orient === 1; onClicked: orient = 1 }
-                    Button { text: "Portrait"; font.pixelSize: sfont; highlighted: orient === 2; onClicked: orient = 2 }
-                }
+                    GroupBox {
+                        title: qsTr("Battery")
+                        Layout.fillWidth: true
 
-                Switch {
-                    text: "Imperial units (mph, mi)"
-                    font.pixelSize: sfont
-                    checked: imperial
-                    onClicked: imperial = checked
-                }
+                        ColumnLayout {
+                            anchors.fill: parent
 
-                Row {
-                    spacing: 12
-                    Text {
-                        width: sfont * 10
-                        text: "Cells in series"
-                        color: "#ddd"
-                        font.pixelSize: sfont
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-                    Button { text: "-"; font.pixelSize: sfont; onClicked: cells = Math.max(1, cells - 1) }
-                    Text {
-                        width: sfont * 3
-                        horizontalAlignment: Text.AlignHCenter
-                        text: cells
-                        color: "#ddd"
-                        font.pixelSize: sfont
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-                    Button { text: "+"; font.pixelSize: sfont; onClicked: cells = Math.min(40, cells + 1) }
-                }
+                            Switch {
+                                text: "Battery level from controller"
+                                checked: useFwLevel
+                                onClicked: useFwLevel = checked
+                            }
 
-                Row {
-                    spacing: 12
-                    Text {
-                        width: sfont * 10
-                        text: "Pack capacity (Ah)"
-                        color: "#ddd"
-                        font.pixelSize: sfont
-                        anchors.verticalCenter: parent.verticalCenter
+                            Label {
+                                text: "Cells and Ah are only used when the controller's level is off"
+                                opacity: 0.6
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: "Cells in series"; Layout.fillWidth: true }
+                                Button { text: "-"; onClicked: cells = Math.max(1, cells - 1) }
+                                Label { text: cells; Layout.preferredWidth: 40; horizontalAlignment: Text.AlignHCenter }
+                                Button { text: "+"; onClicked: cells = Math.min(40, cells + 1) }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: "Pack capacity (Ah)"; Layout.fillWidth: true }
+                                Button { text: "-"; onClicked: packAh = Math.max(0.5, packAh - 0.5) }
+                                Label { text: packAh.toFixed(1); Layout.preferredWidth: 40; horizontalAlignment: Text.AlignHCenter }
+                                Button { text: "+"; onClicked: packAh = Math.min(500, packAh + 0.5) }
+                            }
+                        }
                     }
-                    Button { text: "-"; font.pixelSize: sfont; onClicked: packAh = Math.max(0.5, packAh - 0.5) }
-                    Text {
-                        width: sfont * 3
-                        horizontalAlignment: Text.AlignHCenter
-                        text: packAh.toFixed(1)
-                        color: "#ddd"
-                        font.pixelSize: sfont
-                        anchors.verticalCenter: parent.verticalCenter
+
+                    Label {
+                        text: "Build " + version
+                        opacity: 0.5
                     }
-                    Button { text: "+"; font.pixelSize: sfont; onClicked: packAh = Math.min(500, packAh + 0.5) }
                 }
             }
         }
