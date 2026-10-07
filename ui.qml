@@ -97,8 +97,13 @@ Item {
     // magnitude of the d/q voltage vector
     property real voltsDq: Math.sqrt(voltsD * voltsD + voltsQ * voltsQ)
 
+    // needle color for the modulation gauge: purple in the linear range, yellow up to the six-step limit, red above
+    property color modColor: modulationDepth < 1.0 ? dutyColor
+                             : (modulationDepth < 1.10 ? tempWarnColor : tempHotColor)
+    // idk why the color didn't cooperate before?
+
     // normalized against the linear SVPWM voltage-vector limit.
-    // 1.00 = linear modulation boundary, ~1.15 = six-step limit.
+    // 1.00 = linear modulation boundary, ~1.10 = six-step limit (2 * sqrt(3) / pi).
     property real modulationDepth: voltsRaw > 1.0
                                    ? voltsDq / (voltsRaw / Math.sqrt(3.0))
                                    : 0
@@ -134,8 +139,8 @@ Item {
     // Id/Iq use the same dynamic scale as the phase-current gauge.
     property real dqCurrentLim: phaseLim
 
-    // Voltage gauge scale: enough room for the intended 1.15 modulation limit.
-    // Rounded to 5 V for cleaner gauge labels.
+    // Voltage gauge scale: linear limit (Vdc / sqrt(3)) with room for the ~1.10 six-step limit
+    // plus a little headroom. Rounded to 5 V for cleaner gauge labels.
     property real dqVoltageLim: Math.max(
         10,
         Math.ceil((cells * cellMax / Math.sqrt(3.0) * 1.15) / 5.0) * 5.0
@@ -202,8 +207,10 @@ Item {
             return { type: "DUTY", unit: "%", lo: -100, hi: 100,
                      v: dutyPct, c: dutyColor, n: 8 }
         case "mod":
-            return { type: "MOD", unit: "", lo: 0, hi: 1.15,
-                     v: modulationDepth, c: modulationColor(modulationDepth), n: 10, step: 0.1 }
+            // percent, 100 = end of linear modulation
+            return { type: "MOD", unit: "%", lo: 0, hi: 120,
+                     v: Math.max(0.01, modulationDepth * 100), c: dutyColor, n: 6, step: 20 }
+            // - try to force it color correctly
         case "id":
             return { type: "ID", unit: "A", lo: -dqCurrentLim, hi: dqCurrentLim,
                      v: ampsId, c: ampColor, n: 8 }
@@ -441,7 +448,7 @@ Item {
                              : mainItem.height - 2 * areaMargin
             Repeater {
                 model: 7
-                CustomGauge {
+                    CustomGauge {
                     property string gid: gaugeAt(index)
                     property var d: gDef(gid)
                     property real sz: slotSize(index)
@@ -464,12 +471,14 @@ Item {
                     tickmarkScale: 1
                     nibColor: d.c
                     value: d.v
-                    unitText: d.unit
-                    typeText: d.type
+                    centerTextVisible: d.ctext === undefined
+                    unitText: d.ctext === undefined ? d.unit : ""
+                    typeText: d.ctext === undefined ? d.type : ""
+                    
                 }
             }
 
-            // gear button, opens the settings page
+            // gear button, opens the settings dialog
             Rectangle {
                 id: gearBtn
                 z: 5
@@ -598,15 +607,19 @@ Item {
     // settings dialog, same style as the stock dashboard's
     Dialog {
         id: settingsDialog
+        parent: dialogParent
         modal: true
         focus: true
-        width: parent.width - 20
-        height: Math.min(implicitHeight, parent.height - 40)
         closePolicy: Popup.CloseOnEscape
-        x: 10
-        y: Math.max((parent.height - height) / 2, 10)
-        parent: dialogParent
         standardButtons: Dialog.Ok | Dialog.Cancel
+
+        // keep clear of the screen edges, mostly top and bottom
+        property real vPad: Math.max(24, parent.height * 0.12)
+        width: Math.min(parent.width - 24, 640)
+        height: Math.min(implicitHeight, parent.height - 2 * vPad)
+        x: (parent.width - width) / 2
+        y: (parent.height - height) / 2
+        padding: 12
 
         Overlay.modal: Rectangle {
             color: "#AA000000"
