@@ -58,9 +58,11 @@ Item {
     property color tempHotColor: "#e03131"   // temp at or above the cutoff
 
     // gauge catalog, ids and names are in the same order
-    property var gaugeIds: ["speed", "phase", "line", "weak", "duty", "tempEsc", "tempMotor",
-                            "power", "battery", "voltage", "consump", "range"]
+    property var gaugeIds: ["speed", "phase", "line", "weak", "duty",
+                            "mod", "id", "iq", "vd", "vq",
+                            "tempEsc", "tempMotor", "power", "battery", "voltage", "consump", "range"]
     property var gaugeNames: ["Speed", "Phase current", "Line current", "Field weakening", "Duty",
+                              "Modulation depth", "Id", "Iq", "Vd", "Vq",
                               "Temp ESC", "Temp motor", "Power", "Battery", "Voltage",
                               "Consumption", "Range"]
 
@@ -69,7 +71,10 @@ Item {
         { name: "Full",       main: "speed",   slots: ["phase", "line", "weak", "duty", "tempEsc", "tempMotor"] },
         { name: "Ride",       main: "speed",   slots: ["power", "range", "battery", "line", "tempEsc", "tempMotor"] },
         { name: "Tuning",     main: "speed",   slots: ["phase", "line", "weak", "duty", "power", "tempEsc"] },
-        { name: "Efficiency", main: "consump", slots: ["speed", "power", "range", "battery", "line", "voltage"] }
+        { name: "Efficiency", main: "consump", slots: ["speed", "power", "range", "battery", "line", "voltage"] },
+
+        // FOC / field weakening / overmodulation diagnostics
+        { name: "FOC",        main: "mod",     slots: ["id", "iq", "vd", "vq", "phase", "line"] }
     ]
     property int layoutIndex: 0           // -1 = custom
     property string mainGauge: presets[0].main
@@ -81,6 +86,23 @@ Item {
     property real ampsBatt: 0
     property real ampsFw: 0
     property real dutyPct: 0
+
+    // raw FOC telemetry
+    property real ampsId: 0
+    property real ampsIq: 0
+    property real voltsD: 0
+    property real voltsQ: 0
+    property real voltsRaw: 0
+
+    // magnitude of the d/q voltage vector
+    property real voltsDq: Math.sqrt(voltsD * voltsD + voltsQ * voltsQ)
+
+    // normalized against the linear SVPWM voltage-vector limit.
+    // 1.00 = linear modulation boundary, ~1.15 = six-step limit.
+    property real modulationDepth: voltsRaw > 1.0
+                                   ? voltsDq / (voltsRaw / Math.sqrt(3.0))
+                                   : 0
+
     property real tempMos: 0
     property real tempMotor: 0
     property real volts: 0
@@ -108,6 +130,16 @@ Item {
     property real phaseLim: Math.max(maxPhase, -minPhase)
     property real lineLim: Math.max(maxBattIn, -maxBattRegen)
     property real powerLim: Math.max(1000, Math.ceil(maxBattIn * cells * cellMax / 1000) * 1000)
+
+    // Id/Iq use the same dynamic scale as the phase-current gauge.
+    property real dqCurrentLim: phaseLim
+
+    // Voltage gauge scale: enough room for the intended 1.15 modulation limit.
+    // Rounded to 5 V for cleaner gauge labels.
+    property real dqVoltageLim: Math.max(
+        10,
+        Math.ceil((cells * cellMax / Math.sqrt(3.0) * 1.15) / 5.0) * 5.0
+    )
     property real speedMaxDisp: Math.ceil(speedMaxKm * distK / 10) * 10
     property real rangeMaxDisp: Math.ceil(rangeMaxKm * distK / 50) * 50
 
@@ -145,6 +177,12 @@ Item {
         return baseColor
     }
 
+    function modulationColor(m) {
+        if (m < 1.0) return dutyColor
+        if (m < 1.10) return tempWarnColor
+        return tempHotColor
+    }
+
     // everything a gauge needs, by catalog id
     function gDef(g) {
         switch (g) {
@@ -163,6 +201,21 @@ Item {
         case "duty":
             return { type: "DUTY", unit: "%", lo: -100, hi: 100,
                      v: dutyPct, c: dutyColor, n: 8 }
+        case "mod":
+            return { type: "MOD", unit: "", lo: 0, hi: 1.15,
+                     v: modulationDepth, c: modulationColor(modulationDepth), n: 10, step: 0.1 }
+        case "id":
+            return { type: "ID", unit: "A", lo: -dqCurrentLim, hi: dqCurrentLim,
+                     v: ampsId, c: ampColor, n: 8 }
+        case "iq":
+            return { type: "IQ", unit: "A", lo: -dqCurrentLim, hi: dqCurrentLim,
+                     v: ampsIq, c: ampColor, n: 8 }
+        case "vd":
+            return { type: "VD", unit: "V", lo: -dqVoltageLim, hi: dqVoltageLim,
+                     v: voltsD, c: baseColor, n: 8 }
+        case "vq":
+            return { type: "VQ", unit: "V", lo: -dqVoltageLim, hi: dqVoltageLim,
+                     v: voltsQ, c: baseColor, n: 8 }
         case "tempEsc":
             return { type: "TEMP\nESC", unit: "°C", lo: 0, hi: tempMosMax,
                      v: tempMos, c: tempColor(tempMos, tempMosStart, tempMosEnd), n: 10 }
@@ -312,7 +365,18 @@ Item {
 
             ampsPhase = values.current_motor
             ampsBatt = values.current_in
+
+            // Existing user-facing field-weakening gauge.
+            // Negative Id is displayed as positive FW current.
             ampsFw = -values.id
+
+            // Raw signed FOC telemetry.
+            ampsId = values.id
+            ampsIq = values.iq
+            voltsD = values.vd
+            voltsQ = values.vq
+            voltsRaw = values.v_in
+
             dutyPct = values.duty_now * 100      // signed
             tempMos = values.temp_mos
             tempMotor = values.temp_motor
@@ -324,6 +388,13 @@ Item {
             if (ampsBatt > maxBattIn) maxBattIn = roundUp20(ampsBatt * 1.1)
             if (ampsBatt < maxBattRegen) maxBattRegen = -roundUp20(-ampsBatt * 1.1)
             if (Math.abs(ampsFw) > maxFw) maxFw = roundUp20(Math.abs(ampsFw) * 1.1)
+
+            // Keep Id/Iq readable even if they exceed the configured phase-current range.
+            var dqAbs = Math.max(Math.abs(ampsId), Math.abs(ampsIq))
+            if (dqAbs > phaseLim) {
+                maxPhase = roundUp20(dqAbs * 1.1)
+                minPhase = -maxPhase
+            }
 
             // low-pass the voltage so sag under load doesn't make the bar jump
             volts = volts === 0 ? values.v_in : volts * 0.9 + values.v_in * 0.1
@@ -389,7 +460,7 @@ Item {
                                                        : defHalf)
                     minimumValue: d.lo
                     maximumValue: d.hi
-                    labelStep: stepFor(d.lo, d.hi, d.n)
+                    labelStep: d.step !== undefined ? d.step : stepFor(d.lo, d.hi, d.n)
                     tickmarkScale: 1
                     nibColor: d.c
                     value: d.v
