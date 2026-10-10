@@ -9,7 +9,7 @@ import Vedder.vesc.configparams 1.0
 Item {
     id: mainItem
     anchors.fill: parent
-    anchors.margins: 5
+    anchors.margins: 0
     clip: true
 
     property Commands mCommands: VescIf.commands()
@@ -18,9 +18,15 @@ Item {
     // For building this package
     property string version: "@VERSION@"
 
+    // same darker background as the stock RT Data page
+    Rectangle {
+        anchors.fill: parent
+        color: Utility.getAppHexColor("darkBackground")
+    }
+
     // layout tweaks, all gaps are fractions of the screen height so they work on any aspect ratio
     property real speedScale: 0.97         // landscape: main gauge size, 1.0 = full height
-    property real portraitMainFrac: 0.44   // portrait: main gauge size as a fraction of the gauge area height
+    property real portraitMainFrac: 0.46   // portrait: main gauge size as a fraction of the gauge area height
     property real smallOverlap: 0.06       // landscape: small gauges may overlap vertically by this much, 0 = touching
     property real gaugeGap: 0              // shrinks every small gauge by this many units
     property real areaMargin: ui * 0.01    // landscape: margin around the gauge area
@@ -29,7 +35,14 @@ Item {
     property real textGap: ui * 0.03       // landscape: battery bar <-> status text
     property real barMargin: ui * 0.05     // landscape: battery bar top and bottom margin
     property real textMargin: barMargin + ui * 0.01  // landscape: status text top and bottom margin
-    property real portraitMargin: ui * 0.02 // portrait: margin around the gauge area
+
+    // portrait spacing, matched to the stock RT Data page
+    property real portraitMargin: ui * 0.02   // portrait: side margin around the gauge area
+    property real topPad: ui * 0.03           // portrait: space above the first gauge row
+    property real bottomPad: ui * 0.02        // portrait: space below the status text
+    property real gaugeBarGap: ui * 0.02      // portrait: space between the last gauge row and the battery bar
+    property real barTextGap: ui * 0.012      // portrait: space between the battery bar and the status text
+    property real barH: Math.max(16, width * 0.04)   // portrait: battery bar height
 
     // gauge sweep angles in degrees, 0 = top, positive = clockwise
     property real defHalf: 140             // normal gauges sweep from -140 to 140
@@ -43,17 +56,19 @@ Item {
     property bool portrait: orient === 0 ? width < height : orient === 2
     property real ui: Math.min(width, height)
     property real fs: portrait ? 0.6 : 1.0
-    property real sfont: Math.max(16, ui * 0.035)
-    property real statusH: width * 0.28   // portrait: battery bar and status row
     property int gaugeCount: 7
 
-    // really a fix for a unreproducible bug, wrong gauge colors after orientation rotation 
+    // portrait: height of the status text block and of everything below the gauges
+    property real statusTextH: (Math.max(11, ui * 0.034 * fs) + Math.max(18, ui * 0.085 * fs)) * 1.3
+    property real statusH: barH + gaugeBarGap + barTextGap + statusTextH + bottomPad
+
+    // really a fix for a unreproducible bug, wrong gauge colors after orientation rotation
     onPortraitChanged: {
         gaugeCount = 0
         rebuildTimer.restart()
     }
-    
-    // rebuilding guages on an interval to fix misdraws
+
+    // rebuilding gauges on an interval to fix incorrect coloring during orientation changes
     Timer {
         id: rebuildTimer
         interval: 60
@@ -63,37 +78,39 @@ Item {
     // units, changed on the settings page
     property bool imperial: false
     property real distK: imperial ? 0.621371 : 1.0   // km -> display distance
+    property bool tempF: false                       // temperatures in °F, independent of the imperial switch
 
     // colors
     property color baseColor: "#38b2ea"      // default gauge color and "temp ok"
     property color ampColor: "#c9b72e"       // all amp gauges
     property color dutyColor: "#8b44c4"      // duty gauge
-    property color tempWarnColor: "#e8c21a"  // temp between start and cutoff
-    property color tempHotColor: "#e03131"   // temp at or above the cutoff
+    property color tempWarnColor: "#e8c21a"  // low battery warning
+    property color orangeColor: Utility.getAppHexColor("orange")   // temp above 40 C
+    property color tempHotColor: "#e03131"   // temp above the throttle start
 
     // gauge catalog, ids and names are in the same order
     property var gaugeIds: ["speed", "phase", "line", "weak", "duty",
-                            "mod", "id", "iq", "vd", "vq",
+                            "mod", "id", "iq", "vd", "vq", "vdq",
                             "tempEsc", "tempMotor", "power", "battery", "voltage", "consump", "range"]
     property var gaugeNames: ["Speed", "Phase current", "Line current", "Field weakening", "Duty",
-                              "Modulation depth", "Id", "Iq", "Vd", "Vq",
+                              "Modulation depth", "Id", "Iq", "Vd", "Vq", "Vdq",
                               "Temp ESC", "Temp motor", "Power", "Battery", "Voltage",
                               "Consumption", "Range"]
 
     // predefined layouts: edit or add your own, the first one is used at startup
     property var presets: [
         // Default
-        { name: "Default",    main: "speed",   slots: ["power", "range", "battery", "line", "tempEsc", "tempMotor"] },
+        { name: "Default",    main: "speed",   slots: ["phase", "power", "mod", "tempEsc", "line", "tempMotor"] },
 
         // Volts and Amps displayed nicely
-        { name: "Amperage",   main: "speed",   slots: ["phase", "line", "weak", "duty", "tempEsc", "tempMotor"] },
-        { name: "Voltage",    main: "speed",   slots: ["vq", "power", "mod", "battery", "line", "voltage"] },
+        { name: "Amperage",   main: "speed",   slots: ["phase", "line", "weak", "tempEsc", "duty", "tempMotor"] },
+        { name: "Voltage",    main: "speed",   slots: ["voltage", "power", "mod", "vq", "duty", "vd"] },
 
         // Still dont know about this
         { name: "Tuning",     main: "speed",   slots: ["phase", "line", "weak", "duty", "power", "mod"] },
 
         // FOC / field weakening / overmodulation diagnostics
-        { name: "FOC",        main: "mod",     slots: ["id", "iq", "vd", "vq", "phase", "line"] }
+        { name: "FOC",        main: "mod",     slots: ["vq", "vdq", "vd", "iq", "duty", "id"] }
     ]
     property int layoutIndex: 0           // -1 = custom
     property string mainGauge: presets[0].main
@@ -114,17 +131,12 @@ Item {
     property real voltsRaw: 0
 
     // magnitude of the d/q voltage vector
-    property real voltsDq: Math.sqrt(voltsD * voltsD + voltsQ * voltsQ)
-
-    // needle color for the modulation gauge: purple in the linear range, yellow up to the six-step limit, red above
-    property color modColor: modulationDepth < 1.0 ? dutyColor
-                             : (modulationDepth < 1.10 ? tempWarnColor : tempHotColor)
-    // idk why the color didn't cooperate before?
+    property real voltsDQ: Math.sqrt(voltsD * voltsD + voltsQ * voltsQ)
 
     // normalized against the linear SVPWM voltage-vector limit.
     // 1.00 = linear modulation boundary, ~1.10 = six-step limit (2 * sqrt(3) / pi).
     property real modulationDepth: voltsRaw > 1.0
-                                   ? voltsDq / (voltsRaw / Math.sqrt(3.0))
+                                   ? voltsDQ / (voltsRaw / Math.sqrt(3.0))
                                    : 0
 
     property real tempMos: 0
@@ -153,13 +165,17 @@ Item {
     property real tempMotorMax: 100
     property real phaseLim: Math.max(maxPhase, -minPhase)
     property real lineLim: Math.max(maxBattIn, -maxBattRegen)
-    property real powerLim: Math.max(1000, Math.ceil(maxBattIn * cells * cellMax / 1000) * 1000)
+    property real powerLim: {
+        var raw = maxBattIn * cells * cellMax
+        return Math.max(1000, raw <= 4000 ? Math.ceil(raw / 1000) * 1000
+                                          : Math.ceil(raw / 2000) * 2000)
+    }
 
     // Id/Iq use the same dynamic scale as the phase-current gauge.
     property real dqCurrentLim: phaseLim
 
     // Voltage gauge scale: linear limit (Vdc / sqrt(3)) with room for the ~1.10 six-step limit
-    // plus a little headroom. Rounded to 5 V for cleaner gauge labels.
+    // plus a little headroom, rounded to a limit with clean gauge labels.
     property real dqVoltageLim: Math.max(10, niceLim(cells * cellMax / Math.sqrt(3.0) * 1.15, 8))
     property real speedMaxDisp: Math.ceil(speedMaxKm * distK / 10) * 10
     property real rangeMaxDisp: Math.ceil(rangeMaxKm * distK / 50) * 50
@@ -204,17 +220,19 @@ Item {
     function roundUp10(x) { return Math.ceil(x / 10) * 10 }
     function roundUp20(x) { return Math.ceil(x / 20) * 20 }
 
-    function tempColor(t, start, end) {
-        if (t >= end) return tempHotColor
-        if (t >= start) return tempWarnColor
+    // same rule as the stock dashboard: blue up to 40, orange up to the throttle start, red above it
+    // t is always the raw value in °C
+    function tempColor(t, start) {
+        if (t > start) return tempHotColor
+        if (t > 40) return orangeColor
         return baseColor
     }
 
-    function modulationColor(m) {
-        if (m < 1.0) return dutyColor
-        if (m < 1.10) return tempWarnColor
-        return tempHotColor
-    }
+    // temperatures default to °C, show °F when tempF is on
+    function tempShow(c) { return tempF ? c * 1.8 + 32 : c }
+
+    // gauge maximum: unchanged in °C, rounded up to a multiple of 40 in °F so labels look nice
+    function tempHi(maxC) { return tempF ? Math.ceil((maxC * 1.8 + 32) / 40) * 40 : maxC }
 
     // everything a gauge needs, by catalog id, recycling colors is eco
     function gDef(g) {
@@ -235,10 +253,9 @@ Item {
             return { type: "DUTY", unit: "%", lo: -100, hi: 100,
                      v: dutyPct, c: dutyColor, n: 8 }
         case "mod":
-            // percent, 100 = end of linear modulation
-            return { type: "MOD", unit: "%", lo: 0, hi: 120,
+            // percent, 100 = end of linear modulation. never exactly 0, the gauge draws a blue needle there
+            return { type: "MOD", unit: "%", lo: 0, hi: 110,
                      v: Math.max(0.01, modulationDepth * 100), c: dutyColor, n: 6, step: 20 }
-            // - try to force it color correctly
         case "id":
             return { type: "ID", unit: "A", lo: -dqCurrentLim, hi: dqCurrentLim,
                      v: ampsId, c: ampColor, n: 8 }
@@ -251,15 +268,19 @@ Item {
         case "vq":
             return { type: "VQ", unit: "V", lo: -dqVoltageLim, hi: dqVoltageLim,
                      v: voltsQ, c: baseColor, n: 8 }
+        case "vdq":
+            return { type: "VDQ", unit: "V", lo: -dqVoltageLim, hi: dqVoltageLim,
+                     v: voltsDQ, c: baseColor, n: 8}
         case "tempEsc":
-            return { type: "TEMP\nESC", unit: "°C", lo: 0, hi: tempMosMax,
-                     v: tempMos, c: tempColor(tempMos, tempMosStart, tempMosEnd), n: 10 }
+            return { type: "TEMP\nESC", unit: tempF ? "°F" : "°C", lo: 0, hi: tempHi(tempMosMax),
+                     v: tempShow(tempMos), c: tempColor(tempMos, tempMosStart), n: 10 }
         case "tempMotor":
-            return { type: "TEMP\nMOTOR", unit: "°C", lo: 0, hi: tempMotorMax,
-                     v: tempMotor, c: tempColor(tempMotor, tempMotorStart, tempMotorEnd), n: 10 }
+            return { type: "TEMP\nMOTOR", unit: tempF ? "°F" : "°C", lo: 0, hi: tempHi(tempMotorMax),
+                     v: tempShow(tempMotor), c: tempColor(tempMotor, tempMotorStart), n: 10 }
         case "power":
             return { type: "POWER", unit: "W", lo: -powerLim, hi: powerLim,
-                     v: volts * ampsBatt, c: baseColor, n: 8 }
+                     v: volts * ampsBatt, c: baseColor, n: 8,
+                     step: powerLim <= 4000 ? 1000 : 2000, scale: 0.001, suffix: "k" }
         case "battery":
             return { type: "BATTERY", unit: "%", lo: 0, hi: 100, v: battPct,
                      c: battPct < 15 ? tempHotColor : (battPct < 30 ? tempWarnColor : baseColor), n: 8 }
@@ -351,10 +372,7 @@ Item {
         var s = slotSize(i)
         if (i === 0) return (H - m) / 2
         var row = Math.floor((i - 1) / 3)
-        if (portrait) {
-            var rh = (H - m) / 2
-            return row === 0 ? (rh - s) / 2 : H - rh + (rh - s) / 2
-        }
+        if (portrait) return row === 0 ? 0 : H - s    // top row at the top, bottom row at the bottom, main in between
         var ch = H / 2
         return row * ch + (ch - s) / 2
     }
@@ -369,9 +387,10 @@ Item {
         v = mMcConf.getParamDouble("l_in_current_max");     if (v > 0) maxBattIn = roundUp20(v * 1.15)
         v = mMcConf.getParamDouble("l_in_current_min");     if (v < 0) maxBattRegen = -roundUp20(-v * 1.15)
         v = mMcConf.getParamDouble("foc_fw_current_max");   if (v > 0) maxFw = roundUp20(v * 1.15)
-        v = mMcConf.getParamDouble("l_temp_fet_start");     if (v > 0) tempMosStart = v
+        // throttle start is rounded up to 5 like the stock dashboard does
+        v = mMcConf.getParamDouble("l_temp_fet_start");     if (v > 0) tempMosStart = Math.ceil(v / 5) * 5
         v = mMcConf.getParamDouble("l_temp_fet_end");       if (v > 0) { tempMosEnd = v; tempMosMax = Math.max(100, roundUp10(v)) }
-        v = mMcConf.getParamDouble("l_temp_motor_start");   if (v > 0) tempMotorStart = v
+        v = mMcConf.getParamDouble("l_temp_motor_start");   if (v > 0) tempMotorStart = Math.ceil(v / 5) * 5
         v = mMcConf.getParamDouble("l_temp_motor_end");     if (v > 0) { tempMotorEnd = v; tempMotorMax = Math.max(100, roundUp10(v)) }
         configRead = true
     }
@@ -410,6 +429,7 @@ Item {
             ampsIq = values.iq
             voltsD = values.vd
             voltsQ = values.vq
+            voltsDQ = Math.sqrt(voltsD * voltsD + voltsQ * voltsQ)
             voltsRaw = values.v_in
 
             dutyPct = values.duty_now * 100      // signed
@@ -469,14 +489,14 @@ Item {
         Item {
             id: gaugeArea
             x: portrait ? portraitMargin : areaMargin
-            y: portrait ? portraitMargin : areaMargin
+            y: portrait ? topPad : areaMargin
             width: portrait ? mainItem.width - 2 * portraitMargin
                             : battBar.x - barGap - areaMargin
-            height: portrait ? mainItem.height - statusH - 2 * portraitMargin
+            height: portrait ? mainItem.height - topPad - statusH
                              : mainItem.height - 2 * areaMargin
             Repeater {
                 model: gaugeCount
-                    CustomGauge {
+                CustomGauge {
                     property string gid: gaugeAt(index)
                     property var d: gDef(gid)
                     property real sz: slotSize(index)
@@ -496,13 +516,12 @@ Item {
                     minimumValue: d.lo
                     maximumValue: d.hi
                     labelStep: d.step !== undefined ? d.step : stepFor(d.lo, d.hi, d.n)
-                    tickmarkScale: 1
+                    tickmarkScale: d.scale !== undefined ? d.scale : 1
+                    tickmarkSuffix: d.suffix !== undefined ? d.suffix : ""
                     nibColor: d.c
                     value: d.v
-                    centerTextVisible: d.ctext === undefined
-                    unitText: d.ctext === undefined ? d.unit : ""
-                    typeText: d.ctext === undefined ? d.type : ""
-                    
+                    unitText: d.unit
+                    typeText: d.type
                 }
             }
 
@@ -548,9 +567,9 @@ Item {
             property real segGap: Math.max(2, mainItem.ui * 0.006)   // space between blocks
 
             width: portrait ? mainItem.width - 24 : Math.max(14, mainItem.ui * 0.045)
-            height: portrait ? Math.max(16, mainItem.width * 0.04) : mainItem.height - 2 * barMargin
+            height: portrait ? barH : mainItem.height - 2 * barMargin
             x: portrait ? 12 : textCol.x - textGap - width
-            y: portrait ? mainItem.height - statusH + 4 : barMargin
+            y: portrait ? textCol.y - barTextGap - barH : barMargin
             color: "#222"
             border.color: "#555"
             border.width: Math.max(2, mainItem.ui * 0.005)
@@ -583,9 +602,9 @@ Item {
             id: textCol
             clip: true
             width: portrait ? mainItem.width : mainItem.width * 0.17
-            height: portrait ? statusH - battBar.height - 20 : mainItem.height - 2 * textMargin
+            height: portrait ? statusTextH : mainItem.height - 2 * textMargin
             x: portrait ? 0 : mainItem.width - width
-            y: portrait ? battBar.y + battBar.height + 10 : textMargin
+            y: portrait ? mainItem.height - bottomPad - statusTextH : textMargin
 
             property color labelColor: "#ddd"
             property color valueColor: "#ddd"
@@ -661,6 +680,7 @@ Item {
                 slotGauges: mainItem.slotGauges.slice(),
                 orient: mainItem.orient,
                 imperial: mainItem.imperial,
+                tempF: mainItem.tempF,
                 useFwLevel: mainItem.useFwLevel,
                 cells: mainItem.cells,
                 packAh: mainItem.packAh
@@ -675,6 +695,7 @@ Item {
             mainItem.slotGauges = s.slotGauges
             mainItem.orient = s.orient
             mainItem.imperial = s.imperial
+            mainItem.tempF = s.tempF
             mainItem.useFwLevel = s.useFwLevel
             mainItem.cells = s.cells
             mainItem.packAh = s.packAh
@@ -754,9 +775,15 @@ Item {
                             }
 
                             Switch {
-                                text: "Imperial units (mph, mi)"
+                                text: "Imperial speed (mph, mi)"
                                 checked: imperial
                                 onClicked: imperial = checked
+                            }
+
+                            Switch {
+                                text: "Imperial temperature (°F)"
+                                checked: tempF
+                                onClicked: tempF = checked
                             }
                         }
                     }
