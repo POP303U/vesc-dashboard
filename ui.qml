@@ -35,6 +35,7 @@ Item {
     property real textGap: ui * 0.03       // landscape: battery bar <-> status text
     property real barMargin: ui * 0.05     // landscape: battery bar top and bottom margin
     property real textMargin: barMargin + ui * 0.01  // landscape: status text top and bottom margin
+    property real outerGaugeStagger: ui * 0.035 // stagger the outer gauges so they don't overlap the main gauge, portrait only
 
     // portrait spacing, matched to the stock RT Data page
     property real portraitMargin: ui * 0.02   // portrait: side margin around the gauge area
@@ -156,13 +157,13 @@ Item {
     property int cells: 14
     property real cellMin: 3.0
     property real cellMax: 4.2
-    property real speedMaxKm: 60
-    property real rangeMaxKm: 100
-    property real minPhase: -150
-    property real maxPhase: 150
+    property real speedMaxKm: 100
+    property real rangeMaxKm: 350
+    property real minPhase: -200
+    property real maxPhase: 200
     property real maxBattIn: 100
     property real maxBattRegen: -100
-    property real maxFw: 60
+    property real maxFw: 80
     property real tempMosStart: 85
     property real tempMosEnd: 100
     property real tempMosMax: 100
@@ -176,6 +177,11 @@ Item {
         return Math.max(1000, raw <= 4000 ? Math.ceil(raw / 1000) * 1000
                                           : Math.ceil(raw / 2000) * 2000)
     }
+
+    // speed estimations, not used for anything but display gauges
+    property real speedEstKm: 0       // estimated no-load top speed at the current voltage
+    property real speedPeakKm: 0      // fastest speed since the package started
+    property bool showSpeedEst: true  // small TOP / EST label on the main gauge
 
     // Id/Iq use the same dynamic scale as the phase-current gauge.
     property real dqCurrentLim: phaseLim
@@ -199,7 +205,7 @@ Item {
 
     // smallest clean label step that divides both ends of the range and gives at most n intervals
     function stepFor(lo, hi, n) {
-        var cand = [2, 5, 10, 15, 20, 25, 30, 50, 100, 200, 250, 500, 1000, 2000]
+        var cand = [2, 5, 10, 15, 20, 25, 30, 40, 50, 60, 100, 200, 250, 500, 1000, 2000]
         var r = hi - lo
         var best = -1
         var fit = 0
@@ -216,7 +222,7 @@ Item {
 
     // smallest symmetric limit above raw that lands on a clean step with at most n intervals across -lim..lim
     function niceLim(raw, n) {
-        var cand = [2, 5, 10, 15, 20, 25, 30, 50, 100, 200, 250, 500, 1000, 2000]
+        var cand = [2, 5, 10, 15, 20, 25, 30, 40, 50, 60, 100, 200, 250, 500, 1000, 2000]
         for (var i = 0; i < cand.length; i++) {
             if (2 * raw / cand[i] <= n) return Math.ceil(raw / cand[i]) * cand[i]
         }
@@ -224,7 +230,7 @@ Item {
     }
 
     function roundUp10(x) { return Math.ceil(x / 10) * 10 }
-    function roundUp20(x) { return Math.ceil(x / 20) * 20 }
+    function roundUp20(x) { return Math.ceil(x / 40) * 40 } // multiples of 40 always land on clean label steps, causes a bug if not
 
     // same rule as the stock dashboard: blue up to 40, orange up to the throttle start, red above it
     // t is always the raw value in °C
@@ -378,11 +384,22 @@ Item {
         var s = slotSize(i)
         if (i === 0) return (H - m) / 2
         var row = Math.floor((i - 1) / 3)
-        if (portrait) return row === 0 ? 0 : H - s    // top row at the top, bottom row at the bottom, main in between
-        var ch = H / 2
-        return row * ch + (ch - s) / 2
+        var col = (i - 1) % 3
+        var baseY
+        if (portrait) {
+            baseY = row === 0 ? 0 : H - s
+        } else {
+            var ch = H / 2
+            baseY = row * ch + (ch - s) / 2
+        }
+        // Stagger the outer gauges in both orientations (bug!!!).
+        if (col === 0 || col === 2 || (orient === 1 && col === 1)) {
+            var offset = outerGaugeStagger
+            return baseY + (row === 0 ? offset : -offset)
+        }
+        return baseY
     }
-
+    
     function readConfig() {
         var c = mMcConf.getParamInt("si_battery_cells")
         if (c > 0) cells = c
@@ -422,6 +439,7 @@ Item {
             var wheel = mMcConf.getParamDouble("si_wheel_diameter")
             var ms = (values.rpm / (poles / 2) / gear) * Math.PI * wheel / 60
             kmh = Math.abs(ms * 3.6)
+            if (kmh > speedPeakKm) speedPeakKm = kmh
 
             ampsPhase = values.current_motor
             ampsBatt = values.current_in
@@ -459,6 +477,18 @@ Item {
 
             // low-pass the voltage so sag under load doesn't make the bar jump
             volts = volts === 0 ? values.v_in : volts * 0.9 + values.v_in * 0.1
+
+            // estimated top speed: voltage / (sqrt(3) * 2 * pi * flux linkage), same math as the stock dashboard
+            var fl = mMcConf.getParamDouble("foc_motor_flux_linkage")
+            if (fl > 1e-4 && volts > 1) {
+                var rpmMax = (volts * 60.0) / (Math.sqrt(3.0) * 2.0 * Math.PI * fl)
+                var speedFact = ((poles / 2.0) * 60.0 * gear) / (wheel * Math.PI)
+                if (speedFact > 1e-3) {
+                    speedEstKm = 3.6 * rpmMax / speedFact
+                    // dial range only grows, so it doesn't shrink when the voltage sags under load
+                    if (speedEstKm > speedMaxKm) speedMaxKm = roundUp10(speedEstKm)
+                }
+            }
 
             if (useFwLevel && fwLevel >= 0) {
                 battPct = fwLevel * 100
