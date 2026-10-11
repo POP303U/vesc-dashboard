@@ -116,7 +116,7 @@ Item {
     property string mainGauge: presets[0].main
     property var slotGauges: presets[0].slots.slice()
 
-    // live values
+    // live values (using all these to make screenshots)
     property real kmh: 0
     property real ampsPhase: 0
     property real ampsBatt: 0
@@ -130,6 +130,13 @@ Item {
     property real voltsQ: 0
     property real voltsRaw: 0
 
+    property real tempMos: 0
+    property real tempMotor: 0
+    property real volts: 0
+    property real battPct: 0
+    property real whPerKm: 0
+    property real range: 0
+
     // magnitude of the d/q voltage vector
     property real voltsDQ: Math.sqrt(voltsD * voltsD + voltsQ * voltsQ)
 
@@ -139,12 +146,11 @@ Item {
                                    ? voltsDQ / (voltsRaw / Math.sqrt(3.0))
                                    : 0
 
-    property real tempMos: 0
-    property real tempMotor: 0
-    property real volts: 0
-    property real battPct: 0
-    property real whPerKm: 0
-    property real range: 0
+    // battery value used by the bar only, glides to the real value instead of jumping
+    property real battShown: battPct
+    Behavior on battShown {
+        NumberAnimation { duration: 700; easing.type: Easing.OutCubic }
+    }
 
     // pack and limits, overwritten from the controller config when found
     property int cells: 14
@@ -269,8 +275,8 @@ Item {
             return { type: "VQ", unit: "V", lo: -dqVoltageLim, hi: dqVoltageLim,
                      v: voltsQ, c: baseColor, n: 8 }
         case "vdq":
-            return { type: "VDQ", unit: "V", lo: -dqVoltageLim, hi: dqVoltageLim,
-                     v: voltsDQ, c: baseColor, n: 8}
+            return { type: "VDQ", unit: "V", lo: 0, hi: dqVoltageLim,
+                     v: Math.max(0.01, voltsDQ), c: baseColor, n: 8 }
         case "tempEsc":
             return { type: "TEMP\nESC", unit: tempF ? "°F" : "°C", lo: 0, hi: tempHi(tempMosMax),
                      v: tempShow(tempMos), c: tempColor(tempMos, tempMosStart), n: 10 }
@@ -564,7 +570,7 @@ Item {
         Rectangle {
             id: battBar
             property int segments: 10          // number of blocks
-            property real segGap: Math.max(2, mainItem.ui * 0.006)   // space between blocks
+            property real segGap: Math.max(2, mainItem.ui * 0.006)   // space between blocks, 0 for a continuous bar
 
             width: portrait ? mainItem.width - 24 : Math.max(14, mainItem.ui * 0.045)
             height: portrait ? barH : mainItem.height - 2 * barMargin
@@ -584,15 +590,24 @@ Item {
                     model: battBar.segments
                     Rectangle {
                         property int level: portrait ? index : battBar.segments - 1 - index   // 0 = lowest block
-                        property real t: 1 - level / (battBar.segments - 1)                    // 0 = light, 1 = dark
+                        property real t: battBar.segments > 1 ? 1 - level / (battBar.segments - 1) : 0   // 0 = light, 1 = dark
+                        property real segPct: 100 / battBar.segments
+                        property real frac: Math.max(0, Math.min(1, (battShown - level * segPct) / segPct))
                         width: portrait ? (parent.width - (battBar.segments - 1) * battBar.segGap) / battBar.segments
                                         : parent.width
                         height: portrait ? parent.height
                                          : (parent.height - (battBar.segments - 1) * battBar.segGap) / battBar.segments
                         radius: 0
-                        color: battPct > level * (100 / battBar.segments)
-                               ? Qt.rgba(0.247 - 0.204 * t, 0.722 - 0.177 * t, 0.937 - 0.215 * t, 1)
-                               : "#2c2c2c"
+                        color: "#2c2c2c"
+
+                        // the colored part, fills from the bottom in landscape and from the left in portrait
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.bottom: parent.bottom
+                            width: portrait ? parent.width * frac : parent.width
+                            height: portrait ? parent.height : parent.height * frac
+                            color: Qt.rgba(0.247 - 0.204 * t, 0.722 - 0.177 * t, 0.937 - 0.215 * t, 1)
+                        }
                     }
                 }
             }
