@@ -35,7 +35,7 @@ Item {
     property real textGap: ui * 0.03       // landscape: battery bar <-> status text
     property real barMargin: ui * 0.05     // landscape: battery bar top and bottom margin
     property real textMargin: barMargin + ui * 0.01  // landscape: status text top and bottom margin
-    property real outerGaugeStagger: ui * 0.035 // stagger the outer gauges so they don't overlap the main gauge, portrait only
+    property real outerGaugeStagger: ui * 0.040 // stagger the outer gauges to recreate the orignal design
 
     // portrait spacing, matched to the stock RT Data page
     property real portraitMargin: ui * 0.02   // portrait: side margin around the gauge area
@@ -46,9 +46,11 @@ Item {
     property real barH: Math.max(16, width * 0.04)   // portrait: battery bar height
 
     // gauge sweep angles in degrees, 0 = top, positive = clockwise
-    property real defHalf: 140             // normal gauges sweep from -140 to 140
-    property real outerHalf: 120           // portrait outer gauges, smaller = bigger gap facing the middle gauge
-    property bool mirrorRight: true        // right gauges count the other way, like the stock duty gauge
+    property real defHalf: 140        // normal gauges sweep from -140 to 140
+    property real gapMargin: 25       // portrait outer gauges: extra clearance in degrees beyond the middle gauge's overlap
+    property real minOuterHalf: 115   // narrowest allowed half sweep
+    property real maxOuterHalf: 140   // widest allowed half sweep, same as the normal gauges
+    property bool mirrorRight: true   // right gauges count the other way, like the stock duty gauge
 
     // page and orientation
     property var dialogParent: ApplicationWindow.overlay
@@ -90,10 +92,10 @@ Item {
     property color tempHotColor: "#e03131"   // temp above the throttle start
 
     // gauge catalog, ids and names are in the same order
-    property var gaugeIds: ["speed", "phase", "line", "weak", "duty",
+    property var gaugeIds: ["speed", "erpm", "phase", "line", "weak", "duty",
                             "mod", "id", "iq", "vd", "vq", "vdq",
                             "tempEsc", "tempMotor", "power", "battery", "voltage", "consump", "range"]
-    property var gaugeNames: ["Speed", "Phase current", "Line current", "Field weakening", "Duty",
+    property var gaugeNames: ["Speed", "ERPM", "Phase current", "Line current", "Field weakening", "Duty",
                               "Modulation depth", "Id", "Iq", "Vd", "Vq", "Vdq",
                               "Temp ESC", "Temp motor", "Power", "Battery", "Voltage",
                               "Consumption", "Range"]
@@ -101,11 +103,11 @@ Item {
     // predefined layouts: edit or add your own, the first one is used at startup
     property var presets: [
         // Default
-        { name: "Default",    main: "speed",   slots: ["phase", "power", "mod", "tempEsc", "line", "tempMotor"] },
+        { name: "Default",    main: "speed",   slots: ["phase", "power", "line", "tempEsc", "mod", "tempMotor"] },
 
         // Volts and Amps displayed nicely
         { name: "Amperage",   main: "speed",   slots: ["phase", "line", "weak", "tempEsc", "duty", "tempMotor"] },
-        { name: "Voltage",    main: "speed",   slots: ["voltage", "power", "mod", "vq", "duty", "vd"] },
+        { name: "Voltage",    main: "speed",   slots: ["duty", "power", "mod", "vq", "voltage", "vd"] },
 
         // Still dont know about this
         { name: "Tuning",     main: "speed",   slots: ["phase", "line", "weak", "duty", "power", "mod"] },
@@ -182,6 +184,8 @@ Item {
     property real speedEstKm: 0       // estimated no-load top speed at the current voltage
     property real speedPeakKm: 0      // fastest speed since the package started
     property bool showSpeedEst: true  // small TOP / EST label on the main gauge
+    property real erpm: 0
+    property real erpmMax: 30000      // dial range, only grows
 
     // Id/Iq use the same dynamic scale as the phase-current gauge.
     property real dqCurrentLim: phaseLim
@@ -232,6 +236,11 @@ Item {
     function roundUp10(x) { return Math.ceil(x / 10) * 10 }
     function roundUp20(x) { return Math.ceil(x / 40) * 40 } // multiples of 40 always land on clean label steps, causes a bug if not
 
+    // same as the function above, clean rounding of gauges
+    function erpmRound(x) { return x <= 40000 ? Math.max(10000, Math.ceil(x / 10000) * 10000)
+                                              : Math.ceil(x / 20000) * 20000 }
+    function erpmStep(hi) { return hi <= 40000 ? 5000 : (hi <= 80000 ? 10000 : 20000) }
+
     // same rule as the stock dashboard: blue up to 40, orange up to the throttle start, red above it
     // t is always the raw value in °C
     function tempColor(t, start) {
@@ -252,6 +261,9 @@ Item {
         case "speed":
             return { type: "SPEED", unit: imperial ? "MPH" : "KM/H", lo: 0, hi: speedMaxDisp,
                      v: kmh * distK, c: baseColor, n: 10 }
+        case "erpm":
+            return { type: "ERPM", unit: "RPM", lo: 0, hi: erpmMax,
+                     v: erpm, c: baseColor, n: 8, step: erpmStep(erpmMax), scale: 0.001, suffix: "k" }
         case "phase":
             return { type: "PHASE", unit: "A", lo: -phaseLim, hi: phaseLim,
                      v: ampsPhase, c: ampColor, n: 8 }
@@ -266,7 +278,7 @@ Item {
                      v: dutyPct, c: dutyColor, n: 8 }
         case "mod":
             // percent, 100 = end of linear modulation. never exactly 0, the gauge draws a blue needle there
-            return { type: "MOD", unit: "%", lo: 0, hi: 110,
+            return { type: "MOD", unit: "%", lo: 0, hi: 120,
                      v: Math.max(0.01, modulationDepth * 100), c: dutyColor, n: 6, step: 20 }
         case "id":
             return { type: "ID", unit: "A", lo: -dqCurrentLim, hi: dqCurrentLim,
@@ -391,13 +403,50 @@ Item {
         } else {
             var ch = H / 2
             baseY = row * ch + (ch - s) / 2
-        }
-        // Stagger the outer gauges in both orientations (bug!!!).
-        if (col === 0 || col === 2 || (orient === 1 && col === 1)) {
+            }
+
+        // Stagger the outer gauges in both orientations (weird now)
+        if (portrait && (col === 0 || col === 2) || (!portrait)) {
             var offset = outerGaugeStagger
             return baseY + (row === 0 ? offset : -offset)
         }
         return baseY
+    }
+
+    // portrait outer gauges: direction and half-width (degrees) of the gap where the middle gauge covers the dial,
+    // worked out from the real positions, so the stagger tilt is included
+    function outerGap(i) {
+        var mid = i <= 3 ? 2 : 5                    // the middle gauge in the same row
+        var s = slotSize(i)
+        var sm = slotSize(mid)
+        if (s < 1) return { center: 90, half: 60 }
+        var dx = (slotX(mid) + sm / 2) - (slotX(i) + s / 2)
+        var dy = (slotY(mid) + sm / 2) - (slotY(i) + s / 2)
+        var d = Math.sqrt(dx * dx + dy * dy)
+        var r = s / 2
+        var rm = sm / 2
+        var center = Math.atan2(dx, -dy) * 180 / Math.PI      // 0 = up, clockwise
+        if (center < 0) center += 360
+        var phi = 0                                           // half-angle of the overlap seen from this gauge's center
+        if (d > 0.001 && d < r + rm) {
+            var c = (r * r + d * d - rm * rm) / (2 * r * d)
+            phi = Math.acos(Math.max(-1, Math.min(1, c))) * 180 / Math.PI
+        }
+        var half = Math.max(180 - maxOuterHalf, Math.min(180 - minOuterHalf, phi + gapMargin))
+        return { center: center, half: half }
+    }
+
+    // sweep start and end for the outer gauges, left side counts clockwise, right side mirrored
+    function outerMinAngle(i) {
+        var g = outerGap(i)
+        if ((i - 1) % 3 === 0) return g.center + g.half
+        return mirrorRight ? g.center - g.half : g.center + g.half - 360
+    }
+
+    function outerMaxAngle(i) {
+        var g = outerGap(i)
+        if ((i - 1) % 3 === 0) return g.center - g.half + 360
+        return mirrorRight ? g.center + g.half - 360 : g.center - g.half
     }
     
     function readConfig() {
@@ -441,6 +490,9 @@ Item {
             kmh = Math.abs(ms * 3.6)
             if (kmh > speedPeakKm) speedPeakKm = kmh
 
+            erpm = Math.abs(values.rpm)
+            if (erpm > erpmMax) erpmMax = erpmRound(erpm * 1.1)
+
             ampsPhase = values.current_motor
             ampsBatt = values.current_in
 
@@ -482,6 +534,7 @@ Item {
             var fl = mMcConf.getParamDouble("foc_motor_flux_linkage")
             if (fl > 1e-4 && volts > 1) {
                 var rpmMax = (volts * 60.0) / (Math.sqrt(3.0) * 2.0 * Math.PI * fl)
+                if (rpmMax > erpmMax) erpmMax = erpmRound(rpmMax)
                 var speedFact = ((poles / 2.0) * 60.0 * gear) / (wheel * Math.PI)
                 if (speedFact > 1e-3) {
                     speedEstKm = 3.6 * rpmMax / speedFact
@@ -543,12 +596,8 @@ Item {
                     width: sz
                     height: sz
                     visible: sz > 20
-                    minAngle: portrait && col === 0 ? 270 - outerHalf
-                              : (portrait && col === 2 ? (mirrorRight ? 90 + outerHalf : 90 - outerHalf)
-                                                       : -defHalf)
-                    maxAngle: portrait && col === 0 ? 270 + outerHalf
-                              : (portrait && col === 2 ? (mirrorRight ? 90 - outerHalf : 90 + outerHalf)
-                                                       : defHalf)
+                    minAngle: portrait && col !== 1 ? outerMinAngle(index) : -defHalf
+                    maxAngle: portrait && col !== 1 ? outerMaxAngle(index) : defHalf
                     minimumValue: d.lo
                     maximumValue: d.hi
                     labelStep: d.step !== undefined ? d.step : stepFor(d.lo, d.hi, d.n)
