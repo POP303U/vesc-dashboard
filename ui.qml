@@ -15,10 +15,10 @@ Item {
     property Commands mCommands: VescIf.commands()
     property ConfigParams mMcConf: VescIf.mcConfig()
 
-    // For building this package
+    // current Build version, like "v1.0.0"
     property string version: "@VERSION@"
 
-    // same darker background as the stock RT Data page
+    // same background as the stock RT Data page
     Rectangle {
         anchors.fill: parent
         color: Utility.getAppHexColor("darkBackground")
@@ -55,7 +55,7 @@ Item {
     // page and orientation
     property var dialogParent: ApplicationWindow.overlay
     property var settingsSnap: null
-    property int orient: 0                // 0 = auto, 1 = landscape, 2 = portrait
+    property int orient: 0            // 0 = auto, 1 = landscape, 2 = portrait
     property bool portrait: orient === 0 ? width < height : orient === 2
     property real ui: Math.min(width, height)
     property real fs: portrait ? 0.6 : 1.0
@@ -80,15 +80,15 @@ Item {
 
     // units, changed on the settings page
     property bool imperial: false
-    property real distK: imperial ? 0.621371 : 1.0   // km -> display distance
-    property bool tempF: false                       // temperatures in °F, independent of the imperial switch
+    property real distK: imperial ? 0.621371 : 1.0 // or that 1.60934
+    property bool tempF: false
 
     // colors
     property color baseColor: "#38b2ea"      // default gauge color and "temp ok"
     property color ampColor: "#c9b72e"       // all amp gauges
     property color dutyColor: "#8b44c4"      // duty gauge
     property color tempWarnColor: "#e8c21a"  // low battery warning
-    property color orangeColor: Utility.getAppHexColor("orange")   // temp above 40 C
+    property color orangeColor: Utility.getAppHexColor("orange") // temp above 40 (hardcoded but ok)
     property color tempHotColor: "#e03131"   // temp above the throttle start
 
     // gauge catalog, ids and names are in the same order
@@ -100,27 +100,32 @@ Item {
                               "Temp ESC", "Temp motor", "Power", "Battery", "Voltage",
                               "Consumption", "Range"]
 
-    // predefined layouts: edit or add your own, the first one is used at startup
+    // layouts selectible in the settings menu
     property var presets: [
         // Default
-        { name: "Default",    main: "speed",   slots: ["phase", "power", "line", "tempEsc", "mod", "tempMotor"] },
+        { name: "Main",      main: "speed",   slots: ["phase", "power", "line", "tempEsc", "mod", "tempMotor"] },
+
+        // Mostly Amps, still good for riding
+        { name: "Tuning",    main: "speed",   slots: ["phase", "line", "weak", "duty", "power", "mod"] },
+
+        // Most Fardriver gauges in one
+        { name: "Fardriver", main: "speed",   slots: ["erpm", "tempMotor", "power", "phase", "tempEsc", "line"] },
 
         // Volts and Amps displayed nicely
-        { name: "Amperage",   main: "speed",   slots: ["phase", "line", "weak", "tempEsc", "duty", "tempMotor"] },
-        { name: "Voltage",    main: "speed",   slots: ["duty", "power", "mod", "vq", "voltage", "vd"] },
-
-        // Still dont know about this
-        { name: "Tuning",     main: "speed",   slots: ["phase", "line", "weak", "duty", "power", "mod"] },
+        { name: "Amps",      main: "speed",   slots: ["phase", "line", "weak", "tempEsc", "duty", "tempMotor"] },
+        { name: "Volts",     main: "speed",   slots: ["duty", "power", "mod", "vq", "voltage", "vd"] },
 
         // FOC / field weakening / overmodulation diagnostics
-        { name: "FOC",        main: "mod",     slots: ["vq", "vdq", "vd", "iq", "duty", "id"] }
+        { name: "FOC",       main: "mod",     slots: ["vq", "vdq", "vd", "iq", "duty", "id"] }
     ]
-    property int layoutIndex: 0           // -1 = custom
+    property int layoutIndex: 0 // -1 = custom
     property string mainGauge: presets[0].main
     property var slotGauges: presets[0].slots.slice()
 
     // live values (using all these to make screenshots)
     property real kmh: 0
+    property real kmhSigned: 0
+    property bool negSpeed: false
     property real ampsPhase: 0
     property real ampsBatt: 0
     property real ampsFw: 0
@@ -139,6 +144,13 @@ Item {
     property real battPct: 0
     property real whPerKm: 0
     property real range: 0
+
+    // bottom info row: 0 = battery / voltage / range / consumption, 1 = odometer / trip / up-time / energy
+    property int statusMode: 0
+    property real odoKm: 0
+    property real tripKm: 0
+    property real upMs: 0
+    property real whNet: 0         // energy used, net of regen
 
     // magnitude of the d/q voltage vector
     property real voltsDQ: Math.sqrt(voltsD * voltsD + voltsQ * voltsQ)
@@ -236,6 +248,14 @@ Item {
     function roundUp10(x) { return Math.ceil(x / 10) * 10 }
     function roundUp20(x) { return Math.ceil(x / 40) * 40 } // multiples of 40 always land on clean label steps, causes a bug if not
 
+    function hms(ms) {
+        var s = Math.max(0, Math.floor(ms / 1000))
+        var h = Math.floor(s / 3600)
+        var m = Math.floor((s % 3600) / 60)
+        var sec = s % 60
+        return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m + ":" + (sec < 10 ? "0" : "") + sec
+    }
+
     // same as the function above, clean rounding of gauges
     function erpmRound(x) { return x <= 40000 ? Math.max(10000, Math.ceil(x / 10000) * 10000)
                                               : Math.ceil(x / 20000) * 20000 }
@@ -259,8 +279,9 @@ Item {
     function gDef(g) {
         switch (g) {
         case "speed":
-            return { type: "SPEED", unit: imperial ? "MPH" : "KM/H", lo: 0, hi: speedMaxDisp,
-                     v: kmh * distK, c: baseColor, n: 10 }
+            return { type: "SPEED", unit: imperial ? "MPH" : "KM/H",
+                     lo: negSpeed ? -speedMaxDisp : 0, hi: speedMaxDisp,
+                     v: (negSpeed ? kmhSigned : kmh) * distK, c: baseColor, n: 10 }
         case "erpm":
             return { type: "ERPM", unit: "RPM", lo: 0, hi: erpmMax,
                      v: erpm, c: baseColor, n: 8, step: erpmStep(erpmMax), scale: 0.001, suffix: "k" }
@@ -448,7 +469,7 @@ Item {
         if ((i - 1) % 3 === 0) return g.center - g.half + 360
         return mirrorRight ? g.center + g.half - 360 : g.center - g.half
     }
-    
+
     function readConfig() {
         var c = mMcConf.getParamInt("si_battery_cells")
         if (c > 0) cells = c
@@ -477,17 +498,22 @@ Item {
         }
     }
 
+    Component.onCompleted: {
+        negSpeed = VescIf.speedGaugeUseNegativeValues()
+    }
+
     Connections {
         target: mCommands
 
-        onValuesReceived: {
+        function onValuesReceived(values, mask) {
             if (!configRead) readConfig()
 
             var poles = mMcConf.getParamInt("si_motor_poles")
             var gear = mMcConf.getParamDouble("si_gear_ratio")
             var wheel = mMcConf.getParamDouble("si_wheel_diameter")
             var ms = (values.rpm / (poles / 2) / gear) * Math.PI * wheel / 60
-            kmh = Math.abs(ms * 3.6)
+            kmhSigned = ms * 3.6
+            kmh = Math.abs(kmhSigned)
             if (kmh > speedPeakKm) speedPeakKm = kmh
 
             erpm = Math.abs(values.rpm)
@@ -565,8 +591,14 @@ Item {
             if (rr > rangeMaxKm) rangeMaxKm = Math.ceil(rr * 1.1 / 50) * 50
         }
 
-        onValuesSetupReceived: {
+        function onValuesSetupReceived(values, mask) {
             fwLevel = values.battery_level
+
+            // same sources as the stock page: odometer, trip (tachometer), up-time
+            odoKm = values.odometer / 1000.0
+            tripKm = values.tachometer_abs / 1000.0
+            upMs = values.uptime_ms
+            whNet = values.watt_hours - values.watt_hours_charged
         }
     }
 
@@ -703,14 +735,22 @@ Item {
             property color labelColor: "#ddd"
             property color valueColor: "#ddd"
             property color unitColor: "#ddd"
-            property var labels: ["BATTERY", "VOLTAGE", "RANGE", "CONSUMPTION"]
-            property var units: ["%", "V", imperial ? "MI" : "KM", imperial ? "WH/MI" : "WH/KM"]
+            property var labels: statusMode === 0 ? ["BATTERY", "VOLTAGE", "RANGE", "CONSUMPTION"]
+                                                  : ["ODOMETER", "TRIP", "UP-TIME", "ENERGY"]
+            property var units: statusMode === 0 ? ["%", "V", imperial ? "MI" : "KM", imperial ? "WH/MI" : "WH/KM"]
+                                                 : [imperial ? "MI" : "KM", imperial ? "MI" : "KM", "", "WH"]
 
             function valueFor(i) {
-                if (i === 0) return battPct.toFixed(0)
-                if (i === 1) return volts.toFixed(2)
-                if (i === 2) return range > 0 ? Math.min(range * distK, 999).toFixed(0) : "--"
-                return (whPerKm / distK).toFixed(0)
+                if (statusMode === 0) {
+                    if (i === 0) return battPct.toFixed(0)
+                    if (i === 1) return volts.toFixed(2)
+                    if (i === 2) return range > 0 ? Math.min(range * distK, 999).toFixed(0) : "--"
+                    return (whPerKm / distK).toFixed(0)
+                }
+                if (i === 0) return (odoKm * distK).toFixed(1)
+                if (i === 1) return (tripKm * distK).toFixed(1)
+                if (i === 2) return hms(upMs)
+                return whNet.toFixed(0)
             }
 
             Repeater {
@@ -742,6 +782,12 @@ Item {
                     }
                 }
             }
+
+            // tap the status text to switch between the two sets
+            MouseArea {
+                anchors.fill: parent
+                onClicked: statusMode = 1 - statusMode
+            }
         }
     }
 
@@ -768,6 +814,9 @@ Item {
 
         // remember everything on open so Cancel can put it back
         onOpened: {
+            negSpeed = VescIf.speedGaugeUseNegativeValues()
+            odoField.text = (odoKm * distK).toFixed(2)
+
             mainItem.settingsSnap = {
                 layoutIndex: mainItem.layoutIndex,
                 mainGauge: mainItem.mainGauge,
@@ -776,6 +825,7 @@ Item {
                 imperial: mainItem.imperial,
                 tempF: mainItem.tempF,
                 useFwLevel: mainItem.useFwLevel,
+                negSpeed: mainItem.negSpeed,
                 cells: mainItem.cells,
                 packAh: mainItem.packAh
             }
@@ -790,9 +840,14 @@ Item {
             mainItem.orient = s.orient
             mainItem.imperial = s.imperial
             mainItem.tempF = s.tempF
+            mainItem.negSpeed = s.negSpeed
             mainItem.useFwLevel = s.useFwLevel
             mainItem.cells = s.cells
             mainItem.packAh = s.packAh
+        }
+
+        onAccepted: {
+            VescIf.setSpeedGaugeUseNegativeValues(negSpeed)
         }
 
         ColumnLayout {
@@ -869,15 +924,59 @@ Item {
                             }
 
                             Switch {
+                                id: impSwitch
                                 text: "Imperial speed (mph, mi)"
                                 checked: imperial
                                 onClicked: imperial = checked
+                                Binding { target: impSwitch; property: "checked"; value: imperial }
                             }
 
                             Switch {
                                 text: "Imperial temperature (°F)"
                                 checked: tempF
                                 onClicked: tempF = checked
+                            }
+
+                            Switch {
+                                id: negSwitch
+                                text: "Use negative speed"
+                                checked: negSpeed
+                                onClicked: negSpeed = checked
+                                Binding { target: negSwitch; property: "checked"; value: negSpeed }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: "Info row"; Layout.preferredWidth: 90 }
+                                Button { Layout.fillWidth: true; text: "Battery"; highlighted: statusMode === 0; onClicked: statusMode = 0 }
+                                Button { Layout.fillWidth: true; text: "Trip"; highlighted: statusMode === 1; onClicked: statusMode = 1 }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: qsTr("Odometer")
+                        Layout.fillWidth: true
+
+                        RowLayout {
+                            anchors.fill: parent
+
+                            TextField {
+                                id: odoField
+                                Layout.fillWidth: true
+                                horizontalAlignment: Text.AlignHCenter
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                            }
+                            Label { text: imperial ? "mi" : "km" }
+                            Button {
+                                text: "Set"
+                                onClicked: {
+                                    // comma or dot both work, phones set to German use a comma
+                                    var v = Number(odoField.text.replace(",", "."))
+                                    if (!isNaN(v) && v >= 0 && v <= 20000000) {
+                                        mCommands.setOdometer(Math.round(v / distK * 1000))
+                                    }
+                                }
                             }
                         }
                     }
