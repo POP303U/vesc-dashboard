@@ -173,8 +173,8 @@ Item {
     property real cellMax: 4.2
     property real speedMaxKm: 100
     property real rangeMaxKm: 350
-    property real minPhase: -200
-    property real maxPhase: 200
+    property real minPhase: -150
+    property real maxPhase: 150
     property real maxBattIn: 100
     property real maxBattRegen: -100
     property real maxFw: 80
@@ -198,12 +198,12 @@ Item {
     property bool showSpeedEst: true  // small TOP / EST label on the main gauge
     property real erpm: 0
     property real erpmMax: 30000      // dial range, only grows
+    property real vEst: 0             // battery voltage near no-load, used for the estimates so sag doesn't move the dial
 
     // Id/Iq use the same dynamic scale as the phase-current gauge.
     property real dqCurrentLim: phaseLim
 
-    // Voltage gauge scale: linear limit (Vdc / sqrt(3)) with room for the ~1.10 six-step limit
-    // plus a little headroom, rounded to a limit with clean gauge labels.
+    // Voltage gauge scale: linear limit (Vdc / sqrt(3)) with room for the 1.10~ six-step limit
     property real dqVoltageLim: Math.max(10, niceLim(cells * cellMax / Math.sqrt(3.0) * 1.15, 8))
     property real speedMaxDisp: Math.ceil(speedMaxKm * distK / 10) * 10
     property real rangeMaxDisp: Math.ceil(rangeMaxKm * distK / 50) * 50
@@ -225,28 +225,65 @@ Item {
         var r = hi - lo
         var best = -1
         var fit = 0
+
         for (var i = 0; i < cand.length; i++) {
             var s = cand[i]
+
             if (fit === 0 && r / s <= n) fit = s
             if (lo % s !== 0 || hi % s !== 0) continue
             best = s
             if (r / s <= n) return s
         }
-        // nothing divides cleanly: take the closest step that gives a readable number of labels
+
+        // if nothing divides cleanly then take the closest step that gives a readable number of labels
         return (best > 0 && r / best <= n * 1.5) ? best : (fit > 0 ? fit : 10)
     }
 
     // smallest symmetric limit above raw that lands on a clean step with at most n intervals across -lim..lim
     function niceLim(raw, n) {
         var cand = [2, 5, 10, 15, 20, 25, 30, 40, 50, 60, 100, 200, 250, 500, 1000, 2000]
+
         for (var i = 0; i < cand.length; i++) {
             if (2 * raw / cand[i] <= n) return Math.ceil(raw / cand[i]) * cand[i]
         }
+
         return Math.ceil(raw / 2000) * 2000
     }
 
     function roundUp10(x) { return Math.ceil(x / 10) * 10 }
-    function roundUp20(x) { return Math.ceil(x / 40) * 40 } // multiples of 40 always land on clean label steps, causes a bug if not
+    function roundUp20(x) { return Math.ceil(x / 40) * 40 } // multiples of 40 always land on clean label steps, causes a bug if using 20
+
+     // speed dial follows the estimate in both directions, like the stock dashboard
+    function updateSpeedMax() {
+        var need = roundUp10(kmh * 1.1)
+
+        if (speedEstKm <= 0) {                   // no estimate yet, only grow
+            if (need > speedMaxKm) speedMaxKm = need
+            return
+        }
+
+        var want = Math.max(20, roundUp10(speedEstKm), need)
+        if (want > speedMaxKm) speedMaxKm = want
+        else if (want < speedMaxKm && kmh < want * 0.8) speedMaxKm = want
+    }
+
+    // same for the erpm dial
+    function updateErpmMax(estErpm) {
+        var want = erpmRound(Math.max(estErpm, erpm * 1.1))
+        if (want > erpmMax) erpmMax = want
+        else if (want < erpmMax && erpm < want * 0.8) erpmMax = want
+    }
+
+    // back to the starting dial ranges, controller limits are read again on the next packet
+    function resetRanges() {
+        speedMaxKm = 60
+        erpmMax = 30000
+        rangeMaxKm = 100
+        speedEstKm = 0
+        speedPeakKm = 0
+        vEst = 0
+        configRead = false
+    }
 
     function hms(ms) {
         var s = Math.max(0, Math.floor(ms / 1000))
@@ -256,7 +293,7 @@ Item {
         return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m + ":" + (sec < 10 ? "0" : "") + sec
     }
 
-    // same as the function above, clean rounding of gauges
+    // step rounding
     function erpmRound(x) { return x <= 40000 ? Math.max(10000, Math.ceil(x / 10000) * 10000)
                                               : Math.ceil(x / 20000) * 20000 }
     function erpmStep(hi) { return hi <= 40000 ? 5000 : (hi <= 80000 ? 10000 : 20000) }
@@ -272,7 +309,7 @@ Item {
     // temperatures default to °C, show °F when tempF is on
     function tempShow(c) { return tempF ? c * 1.8 + 32 : c }
 
-    // gauge maximum: unchanged in °C, rounded up to a multiple of 40 in °F so labels look nice
+    // unchanged in °C, rounded up to a multiple of 40 in °F so labels look nice
     function tempHi(maxC) { return tempF ? Math.ceil((maxC * 1.8 + 32) / 40) * 40 : maxC }
 
     // everything a gauge needs, by catalog id, recycling colors is eco
@@ -361,6 +398,7 @@ Item {
             mainGauge = g
         } else {
             var a = slotGauges.slice()
+
             a[i - 1] = g
             slotGauges = a
         }
@@ -369,11 +407,13 @@ Item {
     function cycleGauge(i, dir) {
         var n = gaugeIds.length
         var cur = gaugeIds.indexOf(gaugeAt(i))
+
         setGauge(i, gaugeIds[(cur + dir + n) % n])
     }
 
     function nameOf(g) {
         var k = gaugeIds.indexOf(g)
+
         return k >= 0 ? gaugeNames[k] : g
     }
 
@@ -382,6 +422,7 @@ Item {
         var W = gaugeArea.width
         var H = gaugeArea.height
         if (portrait) return Math.max(0, Math.min(W * 0.95, H * portraitMainFrac))
+
         return Math.max(0, Math.min(W, H) * speedScale)
     }
 
@@ -389,13 +430,17 @@ Item {
         var W = gaugeArea.width
         var H = gaugeArea.height
         var m = mainSizeF()
+
         if (i === 0) return m
         if (portrait) {
             var rh = (H - m) / 2
+
             return Math.max(0, Math.min(rh - gaugeGap, W * 0.42))
         }
+
         var cw = (W - m - speedGap) / 3
         var ch = H / 2
+
         return Math.max(0, Math.min(cw, ch * (1 + smallOverlap)) - gaugeGap)
     }
 
@@ -403,11 +448,15 @@ Item {
         var W = gaugeArea.width
         var m = mainSizeF()
         var s = slotSize(i)
+
         if (i === 0) return portrait ? (W - m) / 2 : 0
+
         var col = (i - 1) % 3
-        if (portrait) return col * (W - s) / 2        // outer gauges touch the edges, middle one overlaps
+        if (portrait) return col * (W - s) / 2  // outer gauges touch the edges, middle one overlaps, unless landscape (handled in slotY)
+
         var left = m + speedGap
         var cw = (W - left) / 3
+
         return left + col * cw + (cw - s) / 2
     }
 
@@ -415,45 +464,55 @@ Item {
         var H = gaugeArea.height
         var m = mainSizeF()
         var s = slotSize(i)
+
         if (i === 0) return (H - m) / 2
         var row = Math.floor((i - 1) / 3)
         var col = (i - 1) % 3
         var baseY
+
         if (portrait) {
             baseY = row === 0 ? 0 : H - s
         } else {
             var ch = H / 2
+
             baseY = row * ch + (ch - s) / 2
-            }
+        }
 
         // Stagger the outer gauges in both orientations (weird now)
         if (portrait && (col === 0 || col === 2) || (!portrait)) {
             var offset = outerGaugeStagger
+
             return baseY + (row === 0 ? offset : -offset)
         }
+
         return baseY
     }
 
-    // portrait outer gauges: direction and half-width (degrees) of the gap where the middle gauge covers the dial,
-    // worked out from the real positions, so the stagger tilt is included
+    // using vector math and cosines to estimate overlap, too overengineered
     function outerGap(i) {
-        var mid = i <= 3 ? 2 : 5                    // the middle gauge in the same row
+        var mid = i <= 3 ? 2 : 5                              // the middle gauge in the same row
         var s = slotSize(i)
         var sm = slotSize(mid)
+
         if (s < 1) return { center: 90, half: 60 }
+
         var dx = (slotX(mid) + sm / 2) - (slotX(i) + s / 2)
         var dy = (slotY(mid) + sm / 2) - (slotY(i) + s / 2)
         var d = Math.sqrt(dx * dx + dy * dy)
         var r = s / 2
         var rm = sm / 2
         var center = Math.atan2(dx, -dy) * 180 / Math.PI      // 0 = up, clockwise
-        if (center < 0) center += 360
         var phi = 0                                           // half-angle of the overlap seen from this gauge's center
+
+        if (center < 0) center += 360
+
         if (d > 0.001 && d < r + rm) {
             var c = (r * r + d * d - rm * rm) / (2 * r * d)
             phi = Math.acos(Math.max(-1, Math.min(1, c))) * 180 / Math.PI
         }
+
         var half = Math.max(180 - maxOuterHalf, Math.min(180 - minOuterHalf, phi + gapMargin))
+
         return { center: center, half: half }
     }
 
@@ -461,12 +520,14 @@ Item {
     function outerMinAngle(i) {
         var g = outerGap(i)
         if ((i - 1) % 3 === 0) return g.center + g.half
+
         return mirrorRight ? g.center - g.half : g.center + g.half - 360
     }
 
     function outerMaxAngle(i) {
         var g = outerGap(i)
         if ((i - 1) % 3 === 0) return g.center - g.half + 360
+
         return mirrorRight ? g.center + g.half - 360 : g.center - g.half
     }
 
@@ -522,11 +583,10 @@ Item {
             ampsPhase = values.current_motor
             ampsBatt = values.current_in
 
-            // Existing user-facing field-weakening gauge.
-            // Negative Id is displayed as positive FW current.
+            // negative Id is displayed as positive FW current, for the weak gauge, not for Id
             ampsFw = -values.id
 
-            // Raw signed FOC telemetry.
+            // main vector components
             ampsId = values.id
             ampsIq = values.iq
             voltsD = values.vd
@@ -546,7 +606,6 @@ Item {
             if (ampsBatt < maxBattRegen) maxBattRegen = -roundUp20(-ampsBatt * 1.1)
             if (Math.abs(ampsFw) > maxFw) maxFw = roundUp20(Math.abs(ampsFw) * 1.1)
 
-            // Keep Id/Iq readable even if they exceed the configured phase-current range.
             var dqAbs = Math.max(Math.abs(ampsId), Math.abs(ampsIq))
             if (dqAbs > phaseLim) {
                 maxPhase = roundUp20(dqAbs * 1.1)
@@ -560,12 +619,27 @@ Item {
             var fl = mMcConf.getParamDouble("foc_motor_flux_linkage")
             if (fl > 1e-4 && volts > 1) {
                 var rpmMax = (volts * 60.0) / (Math.sqrt(3.0) * 2.0 * Math.PI * fl)
+
                 if (rpmMax > erpmMax) erpmMax = erpmRound(rpmMax)
                 var speedFact = ((poles / 2.0) * 60.0 * gear) / (wheel * Math.PI)
+
                 if (speedFact > 1e-3) {
                     speedEstKm = 3.6 * rpmMax / speedFact
+
                     // dial range only grows, so it doesn't shrink when the voltage sags under load
-                    if (speedEstKm > speedMaxKm) speedMaxKm = roundUp10(speedEstKm)
+                    if (vEst === 0 || Math.abs(values.current_in) < 5) vEst = values.v_in
+                    var fl = mMcConf.getParamDouble("foc_motor_flux_linkage")
+
+                    // estimated top speed from the voltage near no-load
+                    if (fl > 1e-4 && vEst > 1 && poles > 0 && gear > 0 && wheel > 0) {
+                        var rpmMax = (vEst * 60.0) / (Math.sqrt(3.0) * 2.0 * Math.PI * fl)
+                        var speedFact = ((poles / 2.0) * 60.0 * gear) / (wheel * Math.PI)
+
+                        speedEstKm = 3.6 * rpmMax / speedFact
+                        updateErpmMax(rpmMax)
+                    }
+
+                    updateSpeedMax()
                 }
             }
 
@@ -574,16 +648,19 @@ Item {
             } else {
                 var vMin = cells * cellMin
                 var vMax = cells * cellMax
+
                 battPct = Math.max(0, Math.min(100, (volts - vMin) / (vMax - vMin) * 100))
             }
 
             if (kmh > 3) {
                 var inst = (values.v_in * values.current_in) / kmh
                 whPerKm = inst
-                // about 20 s time constant at 10 Hz, so range doesn't jump with every throttle blip
+
+                // about 20 s time constant at 10 Hz, so range doesn't jump with every throttle hit 
                 if (!whAvgValid) { whAvg = inst; whAvgValid = true }
                 else whAvg = whAvg * 0.995 + inst * 0.005
             }
+
             var remainingWh = packWh * battPct / 100
             range = (whAvgValid && whAvg > 5) ? remainingWh / whAvg : 0
 
@@ -745,11 +822,14 @@ Item {
                     if (i === 0) return battPct.toFixed(0)
                     if (i === 1) return volts.toFixed(2)
                     if (i === 2) return range > 0 ? Math.min(range * distK, 999).toFixed(0) : "--"
+
                     return (whPerKm / distK).toFixed(0)
                 }
+
                 if (i === 0) return (odoKm * distK).toFixed(1)
                 if (i === 1) return (tripKm * distK).toFixed(1)
                 if (i === 2) return hms(upMs)
+
                 return whNet.toFixed(0)
             }
 
