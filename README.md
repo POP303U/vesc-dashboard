@@ -12,5 +12,4 @@ Implements a much better dashboard than the stock RT-Data view in vesc-tool.
 
 ## Notes
 
-- Settings reset on restart (for now)
-- Needs firmware 6.x or higher  
+- Needs firmware 6.x or higher

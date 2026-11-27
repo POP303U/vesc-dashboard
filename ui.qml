@@ -2,6 +2,7 @@ import QtQuick 2.7
 import QtQuick.Controls 2.10
 import QtQuick.Layouts 1.3
 import QtQuick.Controls.Material 2.2
+import Qt.labs.settings 1.0
 import Vedder.vesc.utility 1.0
 import Vedder.vesc.commands 1.0
 import Vedder.vesc.configparams 1.0
@@ -186,11 +187,7 @@ Item {
     property real tempMotorMax: 100
     property real phaseLim: Math.max(maxPhase, -minPhase)
     property real lineLim: Math.max(maxBattIn, -maxBattRegen)
-    property real powerLim: {
-        var raw = maxBattIn * cells * cellMax
-        return Math.max(1000, raw <= 4000 ? Math.ceil(raw / 1000) * 1000
-                                          : Math.ceil(raw / 2000) * 2000)
-    }
+    property real powerLim: Math.max(2000, niceLim(maxBattIn * cells * cellMax, 8, kCand))
 
     // speed estimations, not used for anything but display gauges
     property real speedEstKm: 0       // estimated no-load top speed at the current voltage
@@ -205,8 +202,11 @@ Item {
 
     // Voltage gauge scale: linear limit (Vdc / sqrt(3)) with room for the 1.10~ six-step limit
     property real dqVoltageLim: Math.max(10, niceLim(cells * cellMax / Math.sqrt(3.0) * 1.15, 8))
-    property real speedMaxDisp: Math.ceil(speedMaxKm * distK / 10) * 10
-    property real rangeMaxDisp: Math.ceil(rangeMaxKm * distK / 50) * 50
+    property real speedMaxDisp: {
+        var raw = Math.max(20, speedMaxKm * distK)
+        return negSpeed ? niceLim(raw, 10, speedCand) : nicePosLim(raw, 10, speedCand)
+    }
+    property real rangeMaxDisp: Math.max(50, nicePosLim(rangeMaxKm * distK, 10))
 
     // range estimate
     property real packAh: 10
@@ -219,10 +219,20 @@ Item {
     property real fwLevel: -1
     property bool configRead: false
 
+    // clean step tables for different gauge types
+    readonly property var stepCand: [1, 2, 5, 10, 15, 20, 25, 30, 40, 50, 60, 80, 100, 150, 200, 250, 300, 400, 500, 1000, 2000, 2500, 3000, 4000, 5000, 10000, 20000, 25000, 30000, 40000, 50000, 100000]
+    readonly property var speedCand: [5, 10, 20, 25, 30, 40, 50, 60, 100, 150, 200]
+    readonly property var kCand: [1000, 2000, 3000, 4000, 5000, 10000, 15000, 20000, 25000, 30000, 40000, 50000, 100000]
+    readonly property var erpmCand: [5000, 10000, 20000, 25000, 30000, 40000, 50000, 100000]
+    readonly property var voltCand: [1, 2, 5, 10, 20, 25, 50, 100]
+    readonly property var tempCand: [10, 20, 25, 30, 40, 50, 100]
+
     // smallest clean label step that divides both ends of the range and gives at most n intervals
-    function stepFor(lo, hi, n) {
-        var cand = [2, 5, 10, 15, 20, 25, 30, 40, 50, 60, 100, 200, 250, 500, 1000, 2000]
+    function stepFor(lo, hi, n, candList) {
+        var cand = candList || stepCand
         var r = hi - lo
+        var loI = Math.round(lo)
+        var hiI = Math.round(hi)
         var best = -1
         var fit = 0
 
@@ -230,7 +240,7 @@ Item {
             var s = cand[i]
 
             if (fit === 0 && r / s <= n) fit = s
-            if (lo % s !== 0 || hi % s !== 0) continue
+            if (loI % s !== 0 || hiI % s !== 0) continue
             best = s
             if (r / s <= n) return s
         }
@@ -240,18 +250,38 @@ Item {
     }
 
     // smallest symmetric limit above raw that lands on a clean step with at most n intervals across -lim..lim
-    function niceLim(raw, n) {
-        var cand = [2, 5, 10, 15, 20, 25, 30, 40, 50, 60, 100, 200, 250, 500, 1000, 2000]
+    function niceLim(raw, n, candList) {
+        var cand = candList || stepCand
+        var v = Math.max(1, raw)
 
         for (var i = 0; i < cand.length; i++) {
-            if (2 * raw / cand[i] <= n) return Math.ceil(raw / cand[i]) * cand[i]
+            var s = cand[i]
+            if (2 * Math.ceil(v / s) <= n) return Math.ceil(v / s) * s
         }
 
-        return Math.ceil(raw / 2000) * 2000
+        var last = cand[cand.length - 1]
+        return Math.ceil(v / last) * last
+    }
+
+    // smallest positive limit above raw that lands on a clean step with at most n intervals across 0..lim
+    function nicePosLim(raw, n, candList) { return niceLim(raw, n * 2, candList) }
+
+    // smallest clean step and outer bounds enclosing loRaw..hiRaw with at most n intervals
+    function niceRange(loRaw, hiRaw, n, candList) {
+        var cand = candList || voltCand
+
+        for (var i = 0; i < cand.length; i++) {
+            var s = cand[i]
+            var lo = Math.floor(loRaw / s) * s
+            var hi = Math.ceil(hiRaw / s) * s
+            if ((hi - lo) / s <= n) return { lo: lo, hi: hi, step: s }
+        }
+
+        var last = cand[cand.length - 1]
+        return { lo: Math.floor(loRaw / last) * last, hi: Math.ceil(hiRaw / last) * last, step: last }
     }
 
     function roundUp10(x) { return Math.ceil(x / 10) * 10 }
-    function roundUp20(x) { return Math.ceil(x / 40) * 40 } // multiples of 40 always land on clean label steps, causes a bug if using 20
 
      // speed dial follows the estimate in both directions, like the stock dashboard
     function updateSpeedMax() {
@@ -294,9 +324,8 @@ Item {
     }
 
     // step rounding
-    function erpmRound(x) { return x <= 40000 ? Math.max(10000, Math.ceil(x / 10000) * 10000)
-                                              : Math.ceil(x / 20000) * 20000 }
-    function erpmStep(hi) { return hi <= 40000 ? 5000 : (hi <= 80000 ? 10000 : 20000) }
+    function erpmRound(x) { return Math.max(10000, nicePosLim(x, 8, erpmCand)) }
+    function erpmStep(hi) { return stepFor(0, hi, 8, kCand) }
 
     // same rule as the stock dashboard: blue up to 40, orange up to the throttle start, red above it
     // t is always the raw value in °C
@@ -309,16 +338,19 @@ Item {
     // temperatures default to °C, show °F when tempF is on
     function tempShow(c) { return tempF ? c * 1.8 + 32 : c }
 
-    // unchanged in °C, rounded up to a multiple of 40 in °F so labels look nice
-    function tempHi(maxC) { return tempF ? Math.ceil((maxC * 1.8 + 32) / 40) * 40 : maxC }
+    // clean upper bound so label steps always divide 0..hi cleanly in both °C and °F
+    function tempHi(maxC) { return nicePosLim(tempShow(maxC), 10, tempCand) }
 
     // everything a gauge needs, by catalog id, recycling colors is eco
     function gDef(g) {
         switch (g) {
-        case "speed":
+        case "speed": {
+            var sLo = negSpeed ? -speedMaxDisp : 0
             return { type: "SPEED", unit: imperial ? "MPH" : "KM/H",
-                     lo: negSpeed ? -speedMaxDisp : 0, hi: speedMaxDisp,
+                     lo: sLo, hi: speedMaxDisp,
+                     step: stepFor(sLo, speedMaxDisp, 10, speedCand),
                      v: (negSpeed ? kmhSigned : kmh) * distK, c: baseColor, n: 10 }
+        }
         case "erpm":
             return { type: "ERPM", unit: "RPM", lo: 0, hi: erpmMax,
                      v: erpm, c: baseColor, n: 8, step: erpmStep(erpmMax), scale: 0.001, suffix: "k" }
@@ -353,23 +385,30 @@ Item {
         case "vdq":
             return { type: "VDQ", unit: "V", lo: 0, hi: dqVoltageLim,
                      v: Math.max(0.01, voltsDQ), c: baseColor, n: 8 }
-        case "tempEsc":
-            return { type: "TEMP\nESC", unit: tempF ? "°F" : "°C", lo: 0, hi: tempHi(tempMosMax),
+        case "tempEsc": {
+            var escHi = tempHi(tempMosMax)
+            return { type: "TEMP\nESC", unit: tempF ? "°F" : "°C", lo: 0, hi: escHi,
+                     step: stepFor(0, escHi, 10, tempCand),
                      v: tempShow(tempMos), c: tempColor(tempMos, tempMosStart), n: 10 }
-        case "tempMotor":
-            return { type: "TEMP\nMOTOR", unit: tempF ? "°F" : "°C", lo: 0, hi: tempHi(tempMotorMax),
+        }
+        case "tempMotor": {
+            var motHi = tempHi(tempMotorMax)
+            return { type: "TEMP\nMOTOR", unit: tempF ? "°F" : "°C", lo: 0, hi: motHi,
+                     step: stepFor(0, motHi, 10, tempCand),
                      v: tempShow(tempMotor), c: tempColor(tempMotor, tempMotorStart), n: 10 }
+        }
         case "power":
             return { type: "POWER", unit: "W", lo: -powerLim, hi: powerLim,
                      v: volts * ampsBatt, c: baseColor, n: 8,
-                     step: powerLim <= 4000 ? 1000 : 2000, scale: 0.001, suffix: "k" }
+                     step: stepFor(-powerLim, powerLim, 8, kCand), scale: 0.001, suffix: "k" }
         case "battery":
             return { type: "BATTERY", unit: "%", lo: 0, hi: 100, v: battPct,
                      c: battPct < 15 ? tempHotColor : (battPct < 30 ? tempWarnColor : baseColor), n: 8 }
-        case "voltage":
-            return { type: "VOLT", unit: "V",
-                     lo: Math.floor(cells * cellMin / 5) * 5, hi: Math.ceil(cells * cellMax / 5) * 5,
+        case "voltage": {
+            var vr = niceRange(cells * cellMin, cells * cellMax, 8, voltCand)
+            return { type: "VOLT", unit: "V", lo: vr.lo, hi: vr.hi, step: vr.step,
                      v: volts, c: baseColor, n: 8 }
+        }
         case "consump":
             return { type: "CONSUMP.", unit: imperial ? "WH/MI" : "WH/KM", lo: -50,
                      hi: Math.ceil(150 / distK / 50) * 50,
@@ -531,16 +570,76 @@ Item {
         return mirrorRight ? g.center + g.half - 360 : g.center - g.half
     }
 
+    Settings {
+        id: dashSettings
+        category: "CustomDashboard"
+        property int layoutIndex: 0
+        property string mainGauge: "speed"
+        property string slotGauges: '["phase","power","line","tempEsc","mod","tempMotor"]'
+        property int orient: 0
+        property bool imperial: false
+        property bool tempF: false
+        property int statusMode: 0
+        property bool useFwLevel: true
+        property int cells: 14
+        property real packAh: 10
+    }
+
+    function loadSettings() {
+        var idx = dashSettings.layoutIndex
+        if (idx >= 0 && idx < presets.length) {
+            applyPreset(idx)
+        } else {
+            layoutIndex = -1
+            mainGauge = gaugeIds.indexOf(dashSettings.mainGauge) >= 0 ? dashSettings.mainGauge : presets[0].main
+            var loadedSlots = null
+            try {
+                var parsed = JSON.parse(dashSettings.slotGauges)
+                if (Array.isArray(parsed) && parsed.length === 6) {
+                    loadedSlots = []
+                    for (var i = 0; i < 6; i++) {
+                        loadedSlots.push(gaugeIds.indexOf(parsed[i]) >= 0 ? parsed[i] : presets[0].slots[i])
+                    }
+                }
+            } catch (e) {}
+            slotGauges = loadedSlots || presets[0].slots.slice()
+        }
+
+        orient = Math.max(0, Math.min(2, dashSettings.orient))
+        imperial = Boolean(dashSettings.imperial)
+        tempF = Boolean(dashSettings.tempF)
+        statusMode = dashSettings.statusMode === 1 ? 1 : 0
+        useFwLevel = Boolean(dashSettings.useFwLevel)
+        cells = Math.max(1, Math.min(40, dashSettings.cells))
+        packAh = Math.max(0.5, Math.min(500, dashSettings.packAh))
+    }
+
+    function saveSettings() {
+        dashSettings.layoutIndex = layoutIndex
+        dashSettings.mainGauge = mainGauge
+        dashSettings.slotGauges = JSON.stringify(slotGauges)
+        dashSettings.orient = orient
+        dashSettings.imperial = imperial
+        dashSettings.tempF = tempF
+        dashSettings.statusMode = statusMode
+        dashSettings.useFwLevel = useFwLevel
+        dashSettings.cells = cells
+        dashSettings.packAh = packAh
+        if (typeof dashSettings.sync === "function") dashSettings.sync()
+    }
+
     function readConfig() {
-        var c = mMcConf.getParamInt("si_battery_cells")
-        if (c > 0) cells = c
         var v
-        v = mMcConf.getParamDouble("si_battery_ah");        if (v > 0) packAh = v
-        v = mMcConf.getParamDouble("l_current_max");        if (v > 0) maxPhase = roundUp20(v * 1.15)
-        v = mMcConf.getParamDouble("l_current_min");        if (v < 0) minPhase = -roundUp20(-v * 1.15)
-        v = mMcConf.getParamDouble("l_in_current_max");     if (v > 0) maxBattIn = roundUp20(v * 1.15)
-        v = mMcConf.getParamDouble("l_in_current_min");     if (v < 0) maxBattRegen = -roundUp20(-v * 1.15)
-        v = mMcConf.getParamDouble("foc_fw_current_max");   if (v > 0) maxFw = roundUp20(v * 1.15)
+        if (useFwLevel) {
+            var c = mMcConf.getParamInt("si_battery_cells")
+            if (c > 0) cells = c
+            v = mMcConf.getParamDouble("si_battery_ah");    if (v > 0) packAh = v
+        }
+        v = mMcConf.getParamDouble("l_current_max");        if (v > 0) maxPhase = niceLim(v * 1.15, 8)
+        v = mMcConf.getParamDouble("l_current_min");        if (v < 0) minPhase = -niceLim(-v * 1.15, 8)
+        v = mMcConf.getParamDouble("l_in_current_max");     if (v > 0) maxBattIn = niceLim(v * 1.15, 8)
+        v = mMcConf.getParamDouble("l_in_current_min");     if (v < 0) maxBattRegen = -niceLim(-v * 1.15, 8)
+        v = mMcConf.getParamDouble("foc_fw_current_max");   if (v > 0) maxFw = niceLim(v * 1.15, 8)
         // throttle start is rounded up to 5 like the stock dashboard does
         v = mMcConf.getParamDouble("l_temp_fet_start");     if (v > 0) tempMosStart = Math.ceil(v / 5) * 5
         v = mMcConf.getParamDouble("l_temp_fet_end");       if (v > 0) { tempMosEnd = v; tempMosMax = Math.max(100, roundUp10(v)) }
@@ -560,7 +659,26 @@ Item {
     }
 
     Component.onCompleted: {
+        loadSettings()
         negSpeed = VescIf.speedGaugeUseNegativeValues()
+    }
+
+    Connections {
+        target: VescIf
+
+        function onPortConnectedChanged() {
+            if (VescIf.isPortConnected()) {
+                resetRanges()
+            }
+        }
+    }
+
+    Connections {
+        target: mMcConf
+
+        function onUpdated() {
+            readConfig()
+        }
     }
 
     Connections {
@@ -572,7 +690,9 @@ Item {
             var poles = mMcConf.getParamInt("si_motor_poles")
             var gear = mMcConf.getParamDouble("si_gear_ratio")
             var wheel = mMcConf.getParamDouble("si_wheel_diameter")
-            var ms = (values.rpm / (poles / 2) / gear) * Math.PI * wheel / 60
+            var ms = (poles > 0 && gear > 0 && wheel > 0)
+                     ? (values.rpm / (poles / 2) / gear) * Math.PI * wheel / 60
+                     : 0
             kmhSigned = ms * 3.6
             kmh = Math.abs(kmhSigned)
             if (kmh > speedPeakKm) speedPeakKm = kmh
@@ -600,15 +720,15 @@ Item {
 
             // grow gauge ranges if the real value goes past them
             if (kmh > speedMaxKm) speedMaxKm = roundUp10(kmh * 1.1)
-            if (ampsPhase > maxPhase) maxPhase = roundUp20(ampsPhase * 1.1)
-            if (ampsPhase < minPhase) minPhase = -roundUp20(-ampsPhase * 1.1)
-            if (ampsBatt > maxBattIn) maxBattIn = roundUp20(ampsBatt * 1.1)
-            if (ampsBatt < maxBattRegen) maxBattRegen = -roundUp20(-ampsBatt * 1.1)
-            if (Math.abs(ampsFw) > maxFw) maxFw = roundUp20(Math.abs(ampsFw) * 1.1)
+            if (ampsPhase > maxPhase) maxPhase = niceLim(ampsPhase * 1.1, 8)
+            if (ampsPhase < minPhase) minPhase = -niceLim(-ampsPhase * 1.1, 8)
+            if (ampsBatt > maxBattIn) maxBattIn = niceLim(ampsBatt * 1.1, 8)
+            if (ampsBatt < maxBattRegen) maxBattRegen = -niceLim(-ampsBatt * 1.1, 8)
+            if (Math.abs(ampsFw) > maxFw) maxFw = niceLim(Math.abs(ampsFw) * 1.1, 8)
 
             var dqAbs = Math.max(Math.abs(ampsId), Math.abs(ampsIq))
             if (dqAbs > phaseLim) {
-                maxPhase = roundUp20(dqAbs * 1.1)
+                maxPhase = niceLim(dqAbs * 1.1, 8)
                 minPhase = -maxPhase
             }
 
@@ -617,28 +737,17 @@ Item {
 
             // estimated top speed: voltage / (sqrt(3) * 2 * pi * flux linkage), same math as the stock dashboard
             var fl = mMcConf.getParamDouble("foc_motor_flux_linkage")
-            if (fl > 1e-4 && volts > 1) {
-                var rpmMax = (volts * 60.0) / (Math.sqrt(3.0) * 2.0 * Math.PI * fl)
-
-                if (rpmMax > erpmMax) erpmMax = erpmRound(rpmMax)
+            if (fl > 1e-4 && volts > 1 && poles > 0 && gear > 0 && wheel > 0) {
                 var speedFact = ((poles / 2.0) * 60.0 * gear) / (wheel * Math.PI)
-
                 if (speedFact > 1e-3) {
-                    speedEstKm = 3.6 * rpmMax / speedFact
+                    var rpmLive = (volts * 60.0) / (Math.sqrt(3.0) * 2.0 * Math.PI * fl)
+                    if (rpmLive > erpmMax) erpmMax = erpmRound(rpmLive)
 
-                    // dial range only grows, so it doesn't shrink when the voltage sags under load
+                    // dial range uses near no-load voltage so sag under load doesn't shrink the dial
                     if (vEst === 0 || Math.abs(values.current_in) < 5) vEst = values.v_in
-                    var fl = mMcConf.getParamDouble("foc_motor_flux_linkage")
-
-                    // estimated top speed from the voltage near no-load
-                    if (fl > 1e-4 && vEst > 1 && poles > 0 && gear > 0 && wheel > 0) {
-                        var rpmMax = (vEst * 60.0) / (Math.sqrt(3.0) * 2.0 * Math.PI * fl)
-                        var speedFact = ((poles / 2.0) * 60.0 * gear) / (wheel * Math.PI)
-
-                        speedEstKm = 3.6 * rpmMax / speedFact
-                        updateErpmMax(rpmMax)
-                    }
-
+                    var rpmEst = vEst > 1 ? (vEst * 60.0) / (Math.sqrt(3.0) * 2.0 * Math.PI * fl) : rpmLive
+                    speedEstKm = 3.6 * rpmEst / speedFact
+                    updateErpmMax(rpmEst)
                     updateSpeedMax()
                 }
             }
@@ -866,7 +975,10 @@ Item {
             // tap the status text to switch between the two sets
             MouseArea {
                 anchors.fill: parent
-                onClicked: statusMode = 1 - statusMode
+                onClicked: {
+                    statusMode = 1 - statusMode
+                    saveSettings()
+                }
             }
         }
     }
@@ -904,6 +1016,7 @@ Item {
                 orient: mainItem.orient,
                 imperial: mainItem.imperial,
                 tempF: mainItem.tempF,
+                statusMode: mainItem.statusMode,
                 useFwLevel: mainItem.useFwLevel,
                 negSpeed: mainItem.negSpeed,
                 cells: mainItem.cells,
@@ -920,6 +1033,7 @@ Item {
             mainItem.orient = s.orient
             mainItem.imperial = s.imperial
             mainItem.tempF = s.tempF
+            mainItem.statusMode = s.statusMode
             mainItem.negSpeed = s.negSpeed
             mainItem.useFwLevel = s.useFwLevel
             mainItem.cells = s.cells
@@ -928,6 +1042,8 @@ Item {
 
         onAccepted: {
             VescIf.setSpeedGaugeUseNegativeValues(negSpeed)
+            if (useFwLevel && configRead) readConfig()
+            saveSettings()
         }
 
         ColumnLayout {
@@ -1012,9 +1128,11 @@ Item {
                             }
 
                             Switch {
+                                id: tempFSwitch
                                 text: "Imperial temperature (°F)"
                                 checked: tempF
                                 onClicked: tempF = checked
+                                Binding { target: tempFSwitch; property: "checked"; value: tempF }
                             }
 
                             Switch {
@@ -1069,9 +1187,11 @@ Item {
                             anchors.fill: parent
 
                             Switch {
+                                id: fwLevelSwitch
                                 text: "Battery level from controller"
                                 checked: useFwLevel
                                 onClicked: useFwLevel = checked
+                                Binding { target: fwLevelSwitch; property: "checked"; value: useFwLevel }
                             }
 
                             Label {
